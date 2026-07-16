@@ -95,6 +95,26 @@ print(tok.decode(greedy_generate(model, config, ids, max_new_tokens=64)))
 
 Inkling is a **reasoning** model: its chat template injects a `Thinking effort level` system message. Use `reasoning_effort` ∈ `{none, minimal, low, medium, high, max}`.
 
+### Images & audio
+
+`InklingProcessor` handles the full preprocessing (image patchify + CLIP-normalize; audio log-mel → dMel bins) and inserts the placeholder soft-tokens:
+
+```python
+from inkling_mlx.processing import InklingProcessor
+from PIL import Image
+
+proc = InklingProcessor(tok, open("/path/to/model/chat_template.jinja").read())
+inputs = proc.apply([{"role": "user", "content": [
+    {"type": "image", "image": Image.open("cat.jpg")},
+    {"type": "text",  "text": "What's in this image?"},
+    # or {"type": "audio", "audio": <16kHz mono np.ndarray>, "sampling_rate": 16000}
+]}])
+out = greedy_generate(model, config, inputs["input_ids"], max_new_tokens=128,
+                      pixel_values=inputs.get("pixel_values"),
+                      audio_input_ids=inputs.get("audio_input_ids"))
+print(tok.decode(out[len(inputs["input_ids"]):]))
+```
+
 ## 🔄 Converting / quantizing yourself
 
 ```bash
@@ -148,4 +168,4 @@ Code: Apache-2.0. Model weights inherit the [Apache-2.0 license](https://hugging
 
 ## ⚠️ Status
 
-Text generation is complete and validated. The vision/audio towers are ported and numerically validated but currently take **pre-featurized** inputs (`pixel_values` / `audio_input_ids`); the image/audio preprocessing pipeline is not yet bundled.
+Text and multimodal generation are complete and validated: the vision/audio towers and their preprocessing (`InklingProcessor` — image patchify/normalize, audio log-mel→dMel, validated to ~1e-7 vs the reference) are included.

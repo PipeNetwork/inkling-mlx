@@ -23,13 +23,17 @@ def load_tokenizer(path: str):
         return PreTrainedTokenizerFast(tokenizer_file=os.path.join(path, "tokenizer.json"))
 
 
-def greedy_generate(model, config, input_ids, max_new_tokens=32, eos_id=None):
+def greedy_generate(model, config, input_ids, max_new_tokens=32, eos_id=None,
+                    pixel_values=None, audio_input_ids=None):
+    """Greedy decode. For multimodal, pass ``pixel_values`` / ``audio_input_ids``
+    (from ``InklingProcessor``); they are consumed only by the prompt prefill."""
     eos_id = eos_id if eos_id is not None else config.eos_token_id
     caches = make_cache(model)
     prompt = list(input_ids)
 
-    # prefill the whole prompt in one pass; only need the last position's logits
-    logits = model(mx.array([prompt]), caches=caches, start_pos=0, last_logit_only=True)
+    # prefill the whole prompt (with any media) in one pass
+    logits = model(mx.array([prompt]), caches=caches, start_pos=0, last_logit_only=True,
+                   pixel_values=pixel_values, audio_input_ids=audio_input_ids)
     next_id = int(mx.argmax(logits[0, -1]).item())
     out = [next_id]
     pos = len(prompt)
