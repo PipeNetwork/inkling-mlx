@@ -21,9 +21,34 @@ from __future__ import annotations
 import glob
 import json
 import os
+import re
 import shutil
 
 import mlx.core as mx
+
+_LAYER_RE = re.compile(r"model\.llm\.layers\.(\d+)\.")
+_N_SHARED = 2   # Inkling: 2 shared experts (router rows after the routed ones)
+
+
+def prune_moe_tensor(name: str, w: mx.array, keep, dense_mlp_idx: int) -> mx.array:
+    """Subset a MoE tensor to the kept experts (REAP). ``keep`` maps sparse-layer
+    index -> array of kept routed-expert indices. Applied BEFORE map_name/transform.
+    Routed experts + the router (gate) are subset; shared experts are untouched."""
+    m = _LAYER_RE.search(name)
+    if m is None:
+        return w
+    L = int(m.group(1))
+    if L < dense_mlp_idx:                        # dense layer — no routed experts
+        return w
+    kidx = mx.array(keep[L - dense_mlp_idx])     # [K]
+    if name.endswith(("experts.w13_weight", "experts.w2_weight")) and "shared" not in name:
+        return w[kidx]                           # [E, ...] -> [K, ...]
+    if name.endswith("mlp.gate.weight"):         # [n_routed + n_shared, hidden]
+        n_routed = w.shape[0] - _N_SHARED        # rows: [routed... , shared...]
+        return mx.concatenate([w[kidx], w[n_routed:]], axis=0)   # [K + n_shared, hidden]
+    if name.endswith("mlp.gate.bias"):           # [n_routed] correction bias
+        return w[kidx]
+    return w                                     # shared_experts.*, gate.global_scale, etc.
 
 
 def map_name(name: str):
@@ -109,8 +134,10 @@ def is_quant_target(out_name: str, quant_axis_size: int, group_size: int, recipe
 _SHARD_CAP_BYTES = 5_000_000_000  # ~5 GB per output shard
 
 
-def _process_tensor(name, w, bits, group_size, out_dtype, recipe="uniform"):
+def _process_tensor(name, w, bits, group_size, out_dtype, recipe="uniform", keep=None, dmi=2):
     """Yield (out_name, array) pairs for one source tensor."""
+    if keep is not None:
+        w = prune_moe_tensor(name, w, keep, dmi)   # REAP: subset to kept experts
     for out_name, kind in map_name(name):
         wt = transform(w, kind)
         quantize = bits is not None and is_quant_target(out_name, wt.shape[-1], group_size, recipe)
@@ -128,14 +155,21 @@ def _process_tensor(name, w, bits, group_size, out_dtype, recipe="uniform"):
 
 
 def convert_model(src: str, dst: str, bits=None, group_size: int = 64, out_dtype=mx.bfloat16,
-                  recipe: str = "uniform"):
+                  recipe: str = "uniform", keep_path=None):
     """Stream-convert an Inkling checkpoint from ``src`` to ``dst``.
 
     ``bits=None`` -> plain dtype cast (bf16). ``bits in {4,6,8}`` -> affine quant.
     ``recipe`` selects which modules are quantized (see ``_RECIPES``).
+    ``keep_path`` (REAP): npz with ``keep`` [n_sparse_layers, K] + ``dense_mlp_idx`` ->
+    prune each MoE layer to its K kept experts and set ``n_routed_experts=K`` in config.
     Processes one source shard at a time; never holds the whole model in RAM.
     """
     os.makedirs(dst, exist_ok=True)
+    keep = dmi = new_ne = None
+    if keep_path is not None:
+        import numpy as np
+        kd = np.load(keep_path)
+        keep = kd["keep"]; dmi = int(kd["dense_mlp_idx"]); new_ne = int(kd["K"])
     index = json.load(open(os.path.join(src, "model.safetensors.index.json")))
     weight_map = index["weight_map"]
 
@@ -166,7 +200,7 @@ def convert_model(src: str, dst: str, bits=None, group_size: int = 64, out_dtype
         tensors = mx.load(path)  # mmap
         for name in shard_to_names[shard]:
             w = tensors[name]
-            for out_name, arr in _process_tensor(name, w, bits, group_size, out_dtype, recipe):
+            for out_name, arr in _process_tensor(name, w, bits, group_size, out_dtype, recipe, keep, dmi):
                 mx.eval(arr)
                 buffer[out_name] = arr
                 buffer_bytes += arr.nbytes
@@ -177,7 +211,7 @@ def convert_model(src: str, dst: str, bits=None, group_size: int = 64, out_dtype
 
     # rename shards with correct total, build index.json
     _finalize_index(dst, out_index, out_shard_id)
-    _write_config(src, dst, bits, group_size, recipe)
+    _write_config(src, dst, bits, group_size, recipe, new_ne)
     _copy_aux(src, dst)
     return dst
 
@@ -197,10 +231,13 @@ def _finalize_index(dst, out_index, n_shards):
         json.dump({"metadata": {"total_size": total}, "weight_map": weight_map}, f, indent=2)
 
 
-def _write_config(src, dst, bits, group_size, recipe="uniform"):
+def _write_config(src, dst, bits, group_size, recipe="uniform", new_ne=None):
     cfg = json.load(open(os.path.join(src, "config.json")))
     if bits is not None:
         cfg["quantization"] = {"group_size": group_size, "bits": bits, "recipe": recipe}
+    if new_ne is not None:                       # REAP: fewer routed experts
+        cfg["text_config"]["n_routed_experts"] = new_ne
+        cfg.setdefault("reap", {})["kept_experts"] = new_ne
     with open(os.path.join(dst, "config.json"), "w") as f:
         json.dump(cfg, f, indent=2)
 

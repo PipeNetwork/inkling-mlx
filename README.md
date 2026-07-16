@@ -59,6 +59,21 @@ tokens ─▶ embed ─▶ embed-norm ─┐
 
 The quantized quality is effectively lossless here — even 4-bit reproduces the model's structure with ~100% confidence on the correct next token.
 
+## 🧬 REAP-pruned builds (smaller, expert-pruned)
+
+[REAP (Cerebras, arXiv:2510.13999)](https://arxiv.org/abs/2510.13999) drops the lowest-**saliency** routed experts per MoE layer, where saliency = mean over active tokens of `router_gate × ‖expert_output‖₂`. The router renormalizes over survivors; the 2 shared experts, attention, and embeddings are untouched.
+
+We profiled saliency over a ~50k-token mix (code + 15 languages + reasoning). **Inkling routes very uniformly** (entropy 0.922; only ~3 cold experts/layer), so it is only *lightly* prunable — measured on a held-out 4-bit perplexity set:
+
+| Build | Experts kept | Size | Perplexity | vs unpruned |
+|---|---:|---:|---:|---:|
+| [4-bit](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) (unpruned) | 256 | ~496 GB | 3.830 | — |
+| [**REAP-12**](https://huggingface.co/pipenetwork/Inkling-MLX-REAP12-4bit) | 225 | ~470 GB | 3.815 | **−0.4%** (free) |
+| [**REAP-25**](https://huggingface.co/pipenetwork/Inkling-MLX-REAP25-4bit) | 192 | ~402 GB | 3.896 | **+1.7%** |
+| [REAP-50](https://huggingface.co/pipenetwork/Inkling-MLX-REAP50-4bit) | 128 | ~272 GB | 4.589 | +19.8% ⚠️ |
+
+**REAP-25** is the sweet spot: a real size cut that clears the 512 GB memory cliff (comfortable eager/wired load) for ~2% perplexity. REAP-50 still answers simple prompts but is visibly degraded — experimental only. Reproduce with `scripts/profile_experts.py` → `scripts/prune_build.py` → `scripts/ppl_eval.py`.
+
 ## 🛠️ Prerequisites
 
 - macOS on Apple Silicon with enough unified memory for the build above
@@ -132,6 +147,13 @@ print(tok.decode(out[len(inputs["input_ids"]):]))
 python -m inkling_mlx.convert_cli --src /path/Inkling-src --dst out-4bit --bits 4
 # standard sweep (bf16 + 8/6/4-bit)
 scripts/convert_all.sh /path/Inkling-src /path/out
+
+# REAP-pruned build: profile expert saliency, then convert with --prune
+python scripts/profile_experts.py /path/out-4bit          # -> expert_usage.npz
+python scripts/prune_experts.py 0.25                      # -> keep_indices.npz (25% prune)
+python -m inkling_mlx.convert_cli --src /path/Inkling-src --dst out-reap25 --bits 4 \
+       --prune /path/keep_indices.npz
+# (or prune an already-quantized build in one pass, bit-identically: scripts/prune_build.py)
 ```
 
 Quantized: attention/MLP/expert projections, embeddings, vision/audio matmuls. Kept high-precision: the MoE router, RMSNorms, the four short-convs, and the relative-position bias. Conversion is streaming, so it runs in bounded memory regardless of model size.

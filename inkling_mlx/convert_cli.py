@@ -27,6 +27,8 @@ def main():
                     help="cpu avoids the Metal GPU-timeout watchdog on huge tensors (slower, robust)")
     ap.add_argument("--recipe", default="uniform", choices=["uniform", "experts_only"],
                     help="experts_only keeps attention + embed/unembed at bf16 (coherent 4-bit-sized build)")
+    ap.add_argument("--prune", default=None,
+                    help="REAP keep-indices npz (from prune_experts.py) -> prune experts during convert")
     args = ap.parse_args()
 
     if args.device == "cpu":
@@ -35,8 +37,9 @@ def main():
 
     dtype = {"bfloat16": mx.bfloat16, "float16": mx.float16}[args.dtype]
     t0 = time.time()
-    print(f"[convert] {args.src} -> {args.dst}  bits={args.bits} group_size={args.group_size} dtype={args.dtype} recipe={args.recipe}")
-    convert_model(args.src, args.dst, bits=args.bits, group_size=args.group_size, out_dtype=dtype, recipe=args.recipe)
+    print(f"[convert] {args.src} -> {args.dst}  bits={args.bits} group_size={args.group_size} dtype={args.dtype} recipe={args.recipe} prune={args.prune}")
+    convert_model(args.src, args.dst, bits=args.bits, group_size=args.group_size, out_dtype=dtype,
+                  recipe=args.recipe, keep_path=args.prune)
     print(f"[convert] done in {time.time()-t0:.0f}s -> {args.dst}")
 
 
