@@ -16,31 +16,34 @@ from huggingface_hub import HfApi, create_repo
 REPO_OWNER = "pipenetwork"
 PKG_DIR = os.path.join(os.path.dirname(__file__), "..", "inkling_mlx")
 
-# name -> (kept experts, prune %, on-disk size, ppl, delta vs unpruned, saliency retained, tag)
+# name -> (kept experts, prune %, size, text ppl, ppl delta, saliency retained, vision score, tag)
+# Calibration is MULTIMODAL (text + images) — see model card. Numbers measured on the
+# published builds: text perplexity on a held-out set, vision = held-out image-ID accuracy.
 BUILDS = {
-    "REAP12-4bit": (225, 12, "~470 GB", 3.815, "-0.4%", "97.4%", "free lunch — no measurable quality loss"),
-    "REAP25-4bit": (192, 25, "~402 GB", 3.896, "+1.7%", "91.8%", "sweet spot — small cost, clears the 512 GB memory cliff"),
-    "REAP50-4bit": (128, 50, "~272 GB", 4.589, "+19.8%", "74.3%", "aggressive / experimental — visibly degraded"),
+    "REAP12-4bit": (225, 12, "~470 GB", 3.794, "-0.9%", "96.4%", "6/6", "free lunch — text AND vision intact"),
+    "REAP25-4bit": (192, 25, "~402 GB", 3.918, "+2.3%", "90.5%", "6/6", "sweet spot — clears the 512 GB memory cliff, vision intact"),
+    "REAP50-4bit": (128, 50, "~272 GB", 4.681, "+22.2%", "73.9%", "~6/6", "aggressive / experimental — text degraded (vision holds)"),
 }
 
 
 def _table():
-    rows = ["| Build | Experts kept | Size | Perplexity | vs unpruned |",
-            "|---|---:|---:|---:|---:|",
-            "| [Inkling-MLX-4bit](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) (unpruned) | 256 | ~490 GB | 3.830 | — |"]
-    for n, (k, _p, sz, ppl, dl, _r, _t) in BUILDS.items():
-        rows.append(f"| [Inkling-MLX-{n}](https://huggingface.co/{REPO_OWNER}/Inkling-MLX-{n}) | {k} | {sz} | {ppl} | {dl} |")
+    rows = ["| Build | Experts kept | Size | Text perplexity | vs unpruned | Vision (held-out image ID) |",
+            "|---|---:|---:|---:|---:|---:|",
+            "| [Inkling-MLX-4bit](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) (unpruned) | 256 | ~490 GB | 3.830 | — | ✓ |"]
+    for n, (k, _p, sz, ppl, dl, _r, vis, _t) in BUILDS.items():
+        rows.append(f"| [Inkling-MLX-{n}](https://huggingface.co/{REPO_OWNER}/Inkling-MLX-{n}) | {k} | {sz} | {ppl} | {dl} | {vis} |")
     return "\n".join(rows)
 
 
 def model_card(name: str) -> str:
-    kept, prune, size, ppl, delta, retained, tag = BUILDS[name]
+    kept, prune, size, ppl, delta, retained, vis, tag = BUILDS[name]
     warn = ""
     if name == "REAP50-4bit":
-        warn = ("\n> **⚠️ Experimental / aggressive build.** At 50% pruning perplexity rises "
-                "~20% over the unpruned 4-bit. It still answers simple prompts coherently, but "
-                "quality is visibly reduced on prose and longer reasoning. Prefer **REAP12** or "
-                "**REAP25** unless you specifically need the smallest footprint.\n")
+        warn = ("\n> **⚠️ Experimental / aggressive build.** At 50% pruning **text** perplexity "
+                "rises ~22% over the unpruned 4-bit (image understanding holds up — see below). "
+                "It answers simple prompts coherently but text quality is visibly reduced on prose "
+                "and longer reasoning. Prefer **REAP12** or **REAP25** unless you specifically need "
+                "the smallest footprint.\n")
     return f"""---
 license: apache-2.0
 base_model: thinkingmachines/Inkling
@@ -75,20 +78,30 @@ ranks each routed expert by **saliency** = mean over the tokens that route to it
 `router_gate_weight × ‖expert_output‖₂` — its actual contribution to the residual
 stream. The lowest-saliency experts are dropped; the router simply renormalizes over
 the survivors (no weight surgery). The **2 shared "sink" experts, attention, and
-embeddings are untouched.**
+embeddings are untouched.** Inkling routes **very uniformly** (routing entropy 0.922;
+only ~1 cold expert per layer under multimodal calibration), so it is only *lightly*
+prunable — reflected below.
 
-Saliency here was measured over a ~50k-token calibration mix (real code + 15 languages
-+ math/reasoning). Inkling routes **very uniformly** (routing entropy 0.922; only ~3
-truly-cold experts per layer), so it is only *lightly* prunable — reflected below.
+## Calibrated on text **and images** (this matters)
 
-## Measured quality (4-bit, perplexity on a fixed held-out set)
+Inkling is multimodal, and expert saliency was profiled over a mixed corpus of **text
+(code + 15 languages + reasoning) and 200 real images** run through the full vision
+path. This is deliberate: an earlier **text-only** calibration pruned experts that
+ground *visual* features (they rarely fire on text), which quietly wrecked image
+understanding — a photo of a Pallas's cat was described as a *"brown bear"*, a golf
+ball as a *"butterfly"* — while text perplexity looked fine. Adding images to the
+calibration restores it: on a held-out image-ID test this build scores **{vis}** vs
+**2/6** for the text-only-calibrated version, at no extra text cost.
+
+## Measured quality (4-bit)
 
 {_table()}
 
-This build: **perplexity {ppl} ({delta} vs the unpruned 4-bit)**, {retained} of
-router-weighted expert contribution retained. Pruning is applied to the already-quantized
-build; because expert subsetting is along the expert axis and affine-quant groups run
-along the hidden axis, it is **bit-identical to pruning the bf16 source then requantizing**.
+This build: **text perplexity {ppl} ({delta} vs the unpruned 4-bit)**, **vision {vis}**
+on the held-out image-ID set, {retained} of router-weighted expert contribution retained.
+Pruning is applied to the already-quantized build; because expert subsetting is along the
+expert axis and affine-quant groups run along the hidden axis, it is **bit-identical to
+pruning the bf16 source then requantizing**.
 
 ## ⚠️ Loading requires the bundled `inkling_mlx` loader
 

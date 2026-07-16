@@ -144,14 +144,17 @@ def prune_builds(src, outputs, usage_path):
 
 
 if __name__ == "__main__":
+    import sys
     mx.set_default_device(mx.cpu)   # CPU indexing: no Metal watchdog on the long stream
-    SRC = "/Users/david/llm/inkling-mlx-out/Inkling-4bit"
-    USAGE = "/Users/david/llm/inkling-mlx-out/expert_usage.npz"
     B = "/Users/david/llm/inkling-mlx-out"
+    SRC = f"{B}/Inkling-4bit"
+    USAGE = sys.argv[1] if len(sys.argv) > 1 else f"{B}/expert_usage.npz"
+    SUFFIX = sys.argv[2] if len(sys.argv) > 2 else ""      # e.g. "mm" -> Inkling-REAP25mm-4bit
     OUTPUTS = {
-        "REAP12": (0.12, f"{B}/Inkling-REAP12-4bit"),
-        "REAP25": (0.25, f"{B}/Inkling-REAP25-4bit"),
-        "REAP50": (0.50, f"{B}/Inkling-REAP50-4bit"),
+        f"REAP12{SUFFIX}": (0.12, f"{B}/Inkling-REAP12{SUFFIX}-4bit"),
+        f"REAP25{SUFFIX}": (0.25, f"{B}/Inkling-REAP25{SUFFIX}-4bit"),
+        f"REAP50{SUFFIX}": (0.50, f"{B}/Inkling-REAP50{SUFFIX}-4bit"),
     }
+    print(f"[prune] usage={USAGE} suffix={SUFFIX!r}", flush=True)
     prune_builds(SRC, OUTPUTS, USAGE)
     print("[prune] ALL DONE", flush=True)

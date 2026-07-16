@@ -7,19 +7,21 @@ from inkling_mlx.generate import greedy_generate
 from inkling_mlx.processing import InklingProcessor
 from transformers import AutoTokenizer
 
-MODEL = "/Users/david/llm/inkling-mlx-out/Inkling-4bit"
+MODEL = sys.argv[1] if len(sys.argv) > 1 else "/Users/david/llm/inkling-mlx-out/Inkling-4bit"
+IMAGE = sys.argv[2] if len(sys.argv) > 2 else "/tmp/test_cat.jpeg"
 try: mx.set_wired_limit(int(500e9))
 except Exception as e: print("[warn]", e, flush=True)
 
-print("[img] loading 4-bit model (eager: weights wired-resident)...", flush=True)
+LAZY = os.environ.get("INKLING_LAZY") == "1"   # lazy mmap for near-capacity (>~500GB) builds
+print(f"[img] loading {os.path.basename(MODEL)} ({'lazy mmap' if LAZY else 'eager, wired-resident'})...", flush=True)
 t0 = time.time()
-model, config = load(MODEL)   # eager (lazy=False default): materialize + wire weights so
-                              # forwards don't re-read/thrash the mmap near the memory ceiling
+model, config = load(MODEL, lazy=LAZY)   # eager: materialize + wire weights so forwards don't
+                                         # re-read/thrash the mmap near the memory ceiling
 tok = AutoTokenizer.from_pretrained(MODEL, trust_remote_code=True)
 proc = InklingProcessor(tok, open(f"{MODEL}/chat_template.jinja").read())
 print(f"[img] ready in {time.time()-t0:.0f}s", flush=True)
 
-img = Image.open("/tmp/test_cat.jpeg").convert("RGB")
+img = Image.open(IMAGE).convert("RGB")
 q = "What animal is in this image, and what is around it? Answer in one sentence."
 inputs = proc.apply([{"role":"user","content":[
     {"type":"image","image":img}, {"type":"text","text":q}]}], reasoning_effort="none")
