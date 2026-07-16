@@ -19,7 +19,8 @@ proc = InklingProcessor(tok, open(f"{model_dir}/chat_template.jinja").read())
 inputs = proc.apply([{"role": "user", "content": [
     {"type": "image", "image": Image.open(image_path)},
     {"type": "text", "text": prompt},
-]}], reasoning_effort="none")
+]}], reasoning_effort="none",
+    max_long_edge=512)   # cap image resolution -> fewer patches -> faster prefill
 
 out = greedy_generate(model, config, inputs["input_ids"], max_new_tokens=128,
                       pixel_values=inputs.get("pixel_values"),

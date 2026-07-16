@@ -115,6 +115,16 @@ out = greedy_generate(model, config, inputs["input_ids"], max_new_tokens=128,
 print(tok.decode(out[len(inputs["input_ids"]):]))
 ```
 
+## ⚡ Performance
+
+- **Load mode.** `load()` eagerly materializes weights **wired-resident** by default, so forwards don't re-read the mmap. For a model near your RAM ceiling (e.g. the 496 GB 4-bit build on a 512 GB Mac), the eager copy may not fit — pass `--lazy` (CLI) / `load(path, lazy=True)` to mmap instead (lower peak RAM, but the first forward pays the ~weight-read and decode can thrash near capacity).
+- **Attention** uses the fused `scaled_dot_product_attention` kernel.
+- **Multimodal prefill** scales with image patches (one 40 px patch = one soft-token). Big images become long prompts; cap resolution with `max_long_edge` to trade a little detail for a much shorter prefill:
+
+  ```python
+  proc.apply(messages, max_long_edge=512)   # ~130 patches instead of ~450 for a 960px image
+  ```
+
 ## 🔄 Converting / quantizing yourself
 
 ```bash

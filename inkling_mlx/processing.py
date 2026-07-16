@@ -40,10 +40,21 @@ AUDIO_BOS = "<|content_audio_input|>"
 
 # ------------------------------- image -------------------------------
 
-def preprocess_image(image) -> tuple[np.ndarray, int]:
-    """PIL.Image or HxWx3 uint8 array -> (pixel_values [N,2,40,40,3] float32, N)."""
-    if hasattr(image, "convert"):
-        image = np.asarray(image.convert("RGB"))
+def preprocess_image(image, max_long_edge: int | None = None) -> tuple[np.ndarray, int]:
+    """PIL.Image or HxWx3 uint8 array -> (pixel_values [N,2,40,40,3] float32, N).
+
+    ``max_long_edge`` (optional) downscales the image (LANCZOS, aspect preserved) so its
+    long edge is at most this many pixels *before* patchify. Each 40px patch is one
+    vision soft-token, so this directly cuts the prompt length / prefill cost for big
+    images (e.g. cap 512 -> ~130 patches vs ~450 at full 960px). ``None`` keeps native
+    resolution (the reference default)."""
+    from PIL import Image
+    if not hasattr(image, "convert"):
+        image = Image.fromarray(np.asarray(image).astype(np.uint8))
+    image = image.convert("RGB")
+    if max_long_edge and max(image.size) > max_long_edge:
+        r = max_long_edge / max(image.size)
+        image = image.resize((max(1, round(image.width * r)), max(1, round(image.height * r))), Image.LANCZOS)
     image = np.asarray(image)
     if image.ndim == 2:
         image = np.stack([image] * 3, axis=-1)
@@ -129,7 +140,7 @@ class InklingProcessor:
         self.image_bos_id = tokenizer.encode(IMAGE_BOS, add_special_tokens=False)[0]
         self.audio_bos_id = tokenizer.encode(AUDIO_BOS, add_special_tokens=False)[0]
 
-    def apply(self, messages, reasoning_effort: str = "none"):
+    def apply(self, messages, reasoning_effort: str = "none", max_long_edge: int | None = None):
         import mlx.core as mx
         pixel_values, audio_ids = [], []
         # Render text via the chat template with placeholders stripped to a sentinel,
@@ -154,7 +165,7 @@ class InklingProcessor:
                 if t == "text":
                     emit_text(role + "<|content_text|>" + part["text"] + "<|end_message|>")
                 elif t == "image":
-                    pv, n = preprocess_image(part["image"])
+                    pv, n = preprocess_image(part["image"], max_long_edge=max_long_edge)
                     pixel_values.append(pv)
                     ids.append(self.tok.encode(role, add_special_tokens=False)[0])
                     ids.append(self.image_bos_id)

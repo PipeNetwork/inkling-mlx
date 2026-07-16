@@ -112,16 +112,12 @@ class Attention(nn.Module):
             q = (q.astype(mx.float32) * tau_q).astype(q.dtype)
             position_bias = (position_bias.astype(mx.float32) * tau_q).astype(position_bias.dtype)
 
-        # GQA expand
-        if self.n_rep > 1:
-            k = mx.repeat(k, self.n_rep, axis=1)
-            v = mx.repeat(v, self.n_rep, axis=1)
-
-        scores = (q.astype(mx.float32) @ mx.swapaxes(k, 2, 3).astype(mx.float32)) * self.scaling
-        scores = scores + position_bias.astype(mx.float32)
-        scores = scores + self._causal_mask(q_pos, kv_pos)
-        weights = mx.softmax(scores, axis=-1)
-        out = weights.astype(v.dtype) @ v                      # [B, heads, Lq, head_dim]
+        # Fused SDPA: O = softmax(scale·QKᵀ + mask)·V, softmax in fp32, native GQA
+        # (k/v passed un-tiled). mask = relative-position bias + causal/sliding, additive.
+        mask = position_bias + self._causal_mask(q_pos, kv_pos)   # [B, heads, Lq, Lkv]
+        out = mx.fast.scaled_dot_product_attention(
+            q, k, v, scale=self.scaling, mask=mask.astype(q.dtype)
+        )                                                        # [B, heads, Lq, head_dim]
 
         out = out.transpose(0, 2, 1, 3).reshape(B, L, self.num_heads * self.head_dim)
         return self.wo_ud(out)

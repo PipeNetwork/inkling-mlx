@@ -54,11 +54,23 @@ def main():
     ap.add_argument("--model", required=True, help="converted MLX model dir")
     ap.add_argument("--prompt", default="The capital of France is")
     ap.add_argument("--max-new-tokens", type=int, default=32)
+    ap.add_argument("--wired-limit-gb", type=float, default=500.0,
+                    help="mx wired-memory limit; needs `sudo sysctl iogpu.wired_limit_mb` set too")
+    ap.add_argument("--lazy", action="store_true",
+                    help="mmap weights instead of eager-loading (lower peak RAM, but forwards "
+                         "re-read from disk and thrash near the memory ceiling)")
     args = ap.parse_args()
 
-    print(f"[load] {args.model}")
+    # eager load pins the weights wired-resident so prefill/decode don't re-read the
+    # mmap (the big win for near-capacity models); pass --lazy to opt out.
+    try:
+        mx.set_wired_limit(int(args.wired_limit_gb * 1e9))
+    except Exception as e:
+        print(f"[warn] set_wired_limit: {e}")
+
+    print(f"[load] {args.model} ({'lazy mmap' if args.lazy else 'eager, wired-resident'})")
     t0 = time.time()
-    model, config = load(args.model)
+    model, config = load(args.model, lazy=args.lazy)
     print(f"[load] ready in {time.time()-t0:.0f}s")
 
     tok = load_tokenizer(args.model)
