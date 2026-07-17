@@ -167,6 +167,18 @@ python -m inkling_mlx.convert_cli --src /path/Inkling-src --dst out-reap25 --bit
 
 Quantized: attention/MLP/expert projections, embeddings, vision/audio matmuls. Kept high-precision: the MoE router, RMSNorms, the four short-convs, and the relative-position bias. Conversion is streaming, so it runs in bounded memory regardless of model size.
 
+### Why affine int4 and not MXFP4 / NVFP4?
+
+MLX also supports floating-point 4-bit modes (`mx.quantize(mode="mxfp4"|"nvfp4")`), and Thinking Machines ships an [Inkling-NVFP4](https://huggingface.co/thinkingmachines/Inkling-NVFP4) checkpoint — so it's a fair question. We benchmarked round-trip reconstruction error (‖W − Ŵ‖ / ‖W‖ vs bf16) on real Inkling expert weights:
+
+| Scheme | bits/weight | reconstruction error |
+|---|---:|---:|
+| **affine int4** (group 64) | 4.50 | **~9.1%** |
+| nvfp4 (group 16) | 4.50 | ~10.2% |
+| mxfp4 (group 32) | 4.25 | ~12.3% |
+
+**Affine int4 is the most faithful** — it's *asymmetric* (per-group scale **and** zero-point, 16 uniform levels), so it centers on Inkling's near-Gaussian expert weights better than symmetric FP4's fixed non-uniform levels (scale only, no zero-point). FP4's real payoff is heavy-tailed *activations* and native Blackwell FP4 tensor cores — neither helps weight fidelity on Apple Silicon (MLX would dequantize FP4 anyway, as there's no FP4 compute). So these builds use affine int4; a Mac port of the NVFP4 checkpoint would be *lower* quality at best-equal size.
+
 ## ✅ Validation
 
 - **fp32 parity** of the decoder layer vs a verbatim reference — max |Δ| ~4e-3 on real weights, both attention types + full MoE.
