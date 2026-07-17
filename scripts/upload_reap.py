@@ -108,6 +108,26 @@ already-quantized build; because expert subsetting is along the expert axis and
 affine-quant groups run along the hidden axis, it is **bit-identical to pruning the bf16
 source then requantizing**.
 
+## Quantization scheme: affine int4 (not NVFP4 / MXFP4)
+
+MLX supports FP4 modes and Thinking Machines ships an
+[Inkling-NVFP4](https://huggingface.co/thinkingmachines/Inkling-NVFP4) checkpoint — so
+for the record, we benchmarked round-trip reconstruction error (‖W − Ŵ‖ / ‖W‖ vs bf16)
+on real Inkling expert weights:
+
+| Scheme | bits/weight | reconstruction error |
+|---|---:|---:|
+| **affine int4** (group 64) | 4.50 | **~9.1%** |
+| nvfp4 (group 16) | 4.50 | ~10.2% |
+| mxfp4 (group 32) | 4.25 | ~12.3% |
+
+Affine int4 is the most faithful: it is *asymmetric* (per-group scale **and** zero-point,
+16 uniform levels), which centers on Inkling's near-Gaussian expert weights better than
+symmetric FP4's fixed non-uniform levels (scale only, no zero-point). FP4's real payoff is
+heavy-tailed *activations* and native Blackwell FP4 tensor cores — neither helps weight
+fidelity on Apple Silicon, where MLX would dequantize FP4 anyway. So these builds use
+affine int4; a Mac port of the NVFP4 checkpoint would be *lower* quality at best-equal size.
+
 ## ⚠️ Loading requires the bundled `inkling_mlx` loader
 
 The `inkling_mm_model` architecture is **not** in stock `mlx-lm` / `mlx-vlm`, so this
