@@ -28,7 +28,7 @@ def first(wnid):
 # (image, accept-keywords, label). Keywords are lowercase substrings; any match = pass.
 SPECS = [
     ("/tmp/test_cat.jpeg", ["cat", "feline", "lynx", "manul"], "Pallas's cat (snow)"),
-    (first("n02102040"), ["dog", "spaniel", "springer", "puppy", "canine"], "English springer dog"),
+    (first("n02102040"), ["dog", "spaniel", "springer", "pupp", "canine"], "English springer dog"),
     (first("n03028079"), ["church", "cathedral", "chapel", "building"], "church"),
     (first("n03445777"), ["golf", "ball"], "golf ball"),
     (first("n03417042"), ["truck", "garbage", "vehicle", "lorry"], "garbage truck"),

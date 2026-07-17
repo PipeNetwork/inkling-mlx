@@ -16,34 +16,35 @@ from huggingface_hub import HfApi, create_repo
 REPO_OWNER = "pipenetwork"
 PKG_DIR = os.path.join(os.path.dirname(__file__), "..", "inkling_mlx")
 
-# name -> (kept experts, prune %, size, text ppl, ppl delta, saliency retained, vision score, tag)
-# Calibration is MULTIMODAL (text + images) — see model card. Numbers measured on the
-# published builds: text perplexity on a held-out set, vision = held-out image-ID accuracy.
+# name -> (kept, prune %, size, text ppl, ppl delta, saliency retained, vision, audio, tag)
+# Calibration is MULTIMODAL (text + images + audio) — see model card. Numbers measured on
+# the published builds: text perplexity on a held-out set; vision = held-out image-ID
+# accuracy; audio = held-out speech transcription word-overlap.
 BUILDS = {
-    "REAP12-4bit": (225, 12, "~470 GB", 3.794, "-0.9%", "96.4%", "6/6", "free lunch — text AND vision intact"),
-    "REAP25-4bit": (192, 25, "~402 GB", 3.918, "+2.3%", "90.5%", "6/6", "sweet spot — clears the 512 GB memory cliff, vision intact"),
-    "REAP50-4bit": (128, 50, "~272 GB", 4.681, "+22.2%", "73.9%", "~6/6", "aggressive / experimental — text degraded (vision holds)"),
+    "REAP12-4bit": (225, 12, "~470 GB", 3.806, "-0.6%", "96.2%", "6/6", "0.88", "free lunch — text, vision AND audio intact"),
+    "REAP25-4bit": (192, 25, "~402 GB", 3.946, "+3.0%", "90.3%", "6/6", "0.87", "sweet spot — clears the 512 GB memory cliff"),
+    "REAP50-4bit": (128, 50, "~272 GB", 4.682, "+22.2%", "75.0%", "5/6", "0.87", "aggressive / experimental — text degraded"),
 }
 
 
 def _table():
-    rows = ["| Build | Experts kept | Size | Text perplexity | vs unpruned | Vision (held-out image ID) |",
-            "|---|---:|---:|---:|---:|---:|",
-            "| [Inkling-MLX-4bit](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) (unpruned) | 256 | ~490 GB | 3.830 | — | ✓ |"]
-    for n, (k, _p, sz, ppl, dl, _r, vis, _t) in BUILDS.items():
-        rows.append(f"| [Inkling-MLX-{n}](https://huggingface.co/{REPO_OWNER}/Inkling-MLX-{n}) | {k} | {sz} | {ppl} | {dl} | {vis} |")
+    rows = ["| Build | Experts kept | Size | Text ppl | vs unpruned | Vision (image ID) | Audio (speech overlap) |",
+            "|---|---:|---:|---:|---:|---:|---:|",
+            "| [Inkling-MLX-4bit](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) (unpruned) | 256 | ~490 GB | 3.830 | — | ✓ | ✓ |"]
+    for n, (k, _p, sz, ppl, dl, _r, vis, aud, _t) in BUILDS.items():
+        rows.append(f"| [Inkling-MLX-{n}](https://huggingface.co/{REPO_OWNER}/Inkling-MLX-{n}) | {k} | {sz} | {ppl} | {dl} | {vis} | {aud} |")
     return "\n".join(rows)
 
 
 def model_card(name: str) -> str:
-    kept, prune, size, ppl, delta, retained, vis, tag = BUILDS[name]
+    kept, prune, size, ppl, delta, retained, vis, aud, tag = BUILDS[name]
     warn = ""
     if name == "REAP50-4bit":
         warn = ("\n> **⚠️ Experimental / aggressive build.** At 50% pruning **text** perplexity "
-                "rises ~22% over the unpruned 4-bit (image understanding holds up — see below). "
-                "It answers simple prompts coherently but text quality is visibly reduced on prose "
-                "and longer reasoning. Prefer **REAP12** or **REAP25** unless you specifically need "
-                "the smallest footprint.\n")
+                "rises ~22% over the unpruned 4-bit, and fine-grained image ID slips a little "
+                "(5/6 vs 6/6). Audio transcription still holds (0.87). It answers simple prompts "
+                "coherently but text quality is visibly reduced on prose and longer reasoning. "
+                "Prefer **REAP12** or **REAP25** unless you specifically need the smallest footprint.\n")
     return f"""---
 license: apache-2.0
 base_model: thinkingmachines/Inkling
@@ -58,6 +59,7 @@ tags:
 - thinking-machines
 - reap
 - pruned
+- audio-text-to-text
 ---
 
 # Inkling-MLX-{name}
@@ -82,26 +84,29 @@ embeddings are untouched.** Inkling routes **very uniformly** (routing entropy 0
 only ~1 cold expert per layer under multimodal calibration), so it is only *lightly*
 prunable — reflected below.
 
-## Calibrated on text **and images** (this matters)
+## Calibrated on text, images **and audio** (this matters)
 
 Inkling is multimodal, and expert saliency was profiled over a mixed corpus of **text
-(code + 15 languages + reasoning) and 200 real images** run through the full vision
-path. This is deliberate: an earlier **text-only** calibration pruned experts that
-ground *visual* features (they rarely fire on text), which quietly wrecked image
-understanding — a photo of a Pallas's cat was described as a *"brown bear"*, a golf
-ball as a *"butterfly"* — while text perplexity looked fine. Adding images to the
-calibration restores it: on a held-out image-ID test this build scores **{vis}** vs
-**2/6** for the text-only-calibrated version, at no extra text cost.
+(code + 15 languages + reasoning), 200 real images, and 180 speech clips** run through
+the full vision and audio paths. This is deliberate: a **text-only** calibration prunes
+experts that ground *visual* features (a Pallas's cat → *"brown bear"*, a golf ball →
+*"butterfly"*); adding only text+image then leaves *audio*-grounding experts unprotected
+(speech transcription word-overlap fell from 0.88 to 0.57 at 25% pruning) — all while
+text perplexity looked fine the whole time. Profiling over all three modalities keeps
+every expert that matters to any of them. On held-out tests this build scores **vision
+{vis}** (vs 2/6 text-only) and **audio {aud}** overlap (vs 0.57 text+image), at no extra
+text cost.
 
 ## Measured quality (4-bit)
 
 {_table()}
 
 This build: **text perplexity {ppl} ({delta} vs the unpruned 4-bit)**, **vision {vis}**
-on the held-out image-ID set, {retained} of router-weighted expert contribution retained.
-Pruning is applied to the already-quantized build; because expert subsetting is along the
-expert axis and affine-quant groups run along the hidden axis, it is **bit-identical to
-pruning the bf16 source then requantizing**.
+(held-out image ID), **audio {aud}** (held-out speech transcription word-overlap),
+{retained} of router-weighted expert contribution retained. Pruning is applied to the
+already-quantized build; because expert subsetting is along the expert axis and
+affine-quant groups run along the hidden axis, it is **bit-identical to pruning the bf16
+source then requantizing**.
 
 ## ⚠️ Loading requires the bundled `inkling_mlx` loader
 

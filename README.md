@@ -63,16 +63,16 @@ The quantized quality is effectively lossless here — even 4-bit reproduces the
 
 [REAP (Cerebras, arXiv:2510.13999)](https://arxiv.org/abs/2510.13999) drops the lowest-**saliency** routed experts per MoE layer, where saliency = mean over active tokens of `router_gate × ‖expert_output‖₂`. The router renormalizes over survivors; the 2 shared experts, attention, and embeddings are untouched.
 
-**Calibrate on text *and* images.** Saliency was profiled over a mixed corpus of text (code + 15 languages + reasoning) **and 200 real images** run through the vision path. This matters: a text-only calibration prunes experts that ground *visual* features (they rarely fire on text), which quietly wrecks image understanding — a Pallas's cat gets called a *"brown bear"*, a golf ball a *"butterfly"* — while text perplexity looks fine. Adding images fixes it at no text cost. **Inkling routes very uniformly** (entropy 0.922; ~1 cold expert/layer under multimodal calibration), so it is only *lightly* prunable:
+**Calibrate on text, images *and* audio.** Saliency was profiled over a mixed corpus of text (code + 15 languages + reasoning), **200 real images, and 180 speech clips** run through the full vision and audio paths. This matters: a text-only calibration prunes experts that ground *visual* features (a Pallas's cat → *"brown bear"*, a golf ball → *"butterfly"*), and text+image alone leaves *audio*-grounding experts unprotected (speech transcription overlap fell 0.88 → 0.57 at 25% pruning) — all while text perplexity looked fine. Profiling over every modality keeps each expert that matters to any of them. **Inkling routes very uniformly** (entropy 0.922; ~0 cold experts/layer under full multimodal calibration), so it is only *lightly* prunable:
 
-| Build | Experts kept | Size | Text ppl | vs unpruned | Vision (held-out ID) |
-|---|---:|---:|---:|---:|---:|
-| [4-bit](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) (unpruned) | 256 | ~496 GB | 3.830 | — | ✓ |
-| [**REAP-12**](https://huggingface.co/pipenetwork/Inkling-MLX-REAP12-4bit) | 225 | ~470 GB | 3.794 | **−0.9%** (free) | 6/6 |
-| [**REAP-25**](https://huggingface.co/pipenetwork/Inkling-MLX-REAP25-4bit) | 192 | ~402 GB | 3.918 | **+2.3%** | 6/6 |
-| [REAP-50](https://huggingface.co/pipenetwork/Inkling-MLX-REAP50-4bit) | 128 | ~272 GB | 4.681 | +22.2% ⚠️ | ~6/6 |
+| Build | Experts kept | Size | Text ppl | vs unpruned | Vision (image ID) | Audio (speech) |
+|---|---:|---:|---:|---:|---:|---:|
+| [4-bit](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) (unpruned) | 256 | ~496 GB | 3.830 | — | ✓ | ✓ |
+| [**REAP-12**](https://huggingface.co/pipenetwork/Inkling-MLX-REAP12-4bit) | 225 | ~470 GB | 3.806 | **−0.6%** (free) | 6/6 | 0.88 |
+| [**REAP-25**](https://huggingface.co/pipenetwork/Inkling-MLX-REAP25-4bit) | 192 | ~402 GB | 3.946 | **+3.0%** | 6/6 | 0.87 |
+| [REAP-50](https://huggingface.co/pipenetwork/Inkling-MLX-REAP50-4bit) | 128 | ~272 GB | 4.682 | +22.2% ⚠️ | 5/6 | 0.87 |
 
-(The text-only-calibrated builds scored just **2/6** on the vision test at the same sizes — hence the multimodal recalibration.) **REAP-25** is the sweet spot: a real size cut that clears the 512 GB memory cliff (comfortable eager/wired load) for ~2% text perplexity, vision intact. REAP-50 keeps vision but its *text* is visibly degraded — experimental only. Reproduce with `scripts/profile_experts_mm.py` → `scripts/prune_build.py <usage.npz> mm` → `scripts/eval_images.py` + `scripts/ppl_eval.py`.
+(Text-only calibration scored **2/6** vision; text+image left audio at **0.57** — hence the full multimodal recalibration, which recovers both at no text cost.) **REAP-25** is the sweet spot: a real size cut that clears the 512 GB memory cliff (comfortable eager/wired load) for ~3% text perplexity, with vision and audio intact. REAP-50 keeps audio but text and fine-grained vision degrade — experimental only. Reproduce with `scripts/profile_experts_mm.py` → `scripts/prune_build.py <usage.npz> mm` → `scripts/eval_build.py`.
 
 ## 🛠️ Prerequisites
 
