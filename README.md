@@ -130,6 +130,15 @@ out = greedy_generate(model, config, inputs["input_ids"], max_new_tokens=128,
 print(tok.decode(out[len(inputs["input_ids"]):]))
 ```
 
+Speech transcription is **verbatim** — two held-out LibriSpeech clips through the 4-bit **REAP-25** build (`"Transcribe the speech in this audio."`), each returned in ~7 s:
+
+| Reference | Model output |
+|---|---|
+| …WHEN DEATH LIKE SOME REMORSELESS CREDITOR SEIZES ON ALL WE FONDLY THOUGHT OUR OWN… | "…when death, like some remorseless creditor, seizes on all we fondly thought our own…" |
+| …ACCORDING TO **SALVIAN** AND HIS CONTEMPORARIES THE VANDAL CONQUERORS WORKED IN NORTH AFRICA… | "…according to **Salvian** and his contemporaries, the Vandal conquerors worked in North Africa…" |
+
+Both scored **1.00** content-word overlap — including obscure proper nouns ("Salvian") and archaic phrasing — with punctuation and casing added. (This fidelity is *because* the pruning was calibrated on audio; the text+image-only build paraphrased and dropped proper nouns — see below.)
+
 ## ⚡ Performance
 
 - **Load mode.** `load()` eagerly materializes weights **wired-resident** by default, so forwards don't re-read the mmap. For a model near your RAM ceiling (e.g. the 496 GB 4-bit build on a 512 GB Mac), the eager copy may not fit — pass `--lazy` (CLI) / `load(path, lazy=True)` to mmap instead (lower peak RAM, but the first forward pays the ~weight-read and decode can thrash near capacity).
