@@ -238,6 +238,9 @@ def main():
     ap.add_argument("src", help="local build dir")
     ap.add_argument("--family", choices=sorted(FAMILIES), default=None,
                     help="override the family detected from the build's config.json")
+    ap.add_argument("--card-only", action="store_true",
+                    help="re-render and push README.md only — no weight transfer or re-hashing "
+                         "(use when the card text changes after the build is already published)")
     args = ap.parse_args()
 
     family = args.family or detect_family(args.src)
@@ -247,6 +250,16 @@ def main():
 
     # fail fast on auth/repo before any large transfer
     create_repo(repo, repo_type="model", private=False, exist_ok=True)
+
+    if args.card_only:
+        card = model_card(family, args.name, measured_sizes(family, args.src))
+        with open(os.path.join(args.src, "README.md"), "w") as fh:
+            fh.write(card)
+        HfApi().upload_file(path_or_fileobj=card.encode(), path_in_repo="README.md",
+                            repo_id=repo, repo_type="model",
+                            commit_message="Refresh model card")
+        print(f"CARD REFRESHED {repo}")
+        return
 
     # bundle the loader package (only .py, no __pycache__)
     pkg_dst = os.path.join(args.src, "inkling_mlx")
