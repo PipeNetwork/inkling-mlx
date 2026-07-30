@@ -108,14 +108,19 @@ def model_card(family: str, name: str, sizes: dict) -> str:
         warning = """
 > ### ⚠️ This build is experimental
 >
-> 3-bit measures **+20% text perplexity** vs 8-bit (6.706 vs 5.569) — the same
-> magnitude of damage as 50% expert pruning. It answers direct factual and coding
-> questions correctly, but after the answer it tends to fall into repetition loops
-> and emit stray glyphs. At ~116 GB it also only *just* fits a 128 GB Mac, needing
-> `iogpu.wired_limit_mb` raised close to the ceiling.
+> 3-bit measures **+20% text perplexity** vs 8-bit (6.706 vs 5.569). It answers direct
+> factual and coding questions correctly, but after the answer it tends to fall into
+> repetition loops and emit stray glyphs. At ~116 GB it also only *just* fits a 128 GB
+> Mac, needing `iogpu.wired_limit_mb` raised close to the ceiling.
 >
-> **Prefer [4-bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-4bit)** if you
-> have the memory — it shows no measurable loss vs 8-bit.
+> **For the same ~112 GB footprint, take
+> [REAP25-4bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-REAP25-4bit) instead.**
+> It keeps 4-bit precision and drops 25% of the routed experts instead, which measured
+> as *no* perplexity cost (vs this build's +20%), with vision and speech intact. This
+> 3-bit build is kept only for the case where you want the full 256-expert set at that
+> size. With more memory, plain
+> [4-bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-4bit) shows no measurable
+> loss vs 8-bit.
 """
     if name == "bf16":
         precision = (
@@ -184,6 +189,8 @@ are ported; the multi-token-prediction head is dropped (inference-irrelevant).
 {rows}
 
 {"Perplexity is teacher-forcing over one fixed held-out set (prose / code / reasoning / multilingual) — identical inputs across builds, so the columns compare directly. 4-bit shows no measurable loss vs 8-bit." if ppl else ""}
+
+{"There is also a **REAP-pruned** build: [REAP25-4bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-REAP25-4bit) keeps 4-bit precision with 192 of 256 routed experts, fitting a **128 GB Mac** at ~112 GB for no measurable perplexity cost, with vision and speech intact." if family == "Inkling-Small" else ""}
 
 {quant_para}
 
