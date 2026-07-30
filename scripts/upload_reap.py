@@ -52,11 +52,37 @@ text cost.""",
         "base_model": "thinkingmachines/Inkling-Small",
         "hidden_size": 4096,
         "unpruned": ("4bit", 256, "~148 GB", 5.452),
-        "routing": None,           # set from the measured profile (see routing stats below)
+        "routing": "routing entropy 0.908; only ~0.15 cold experts per layer once audio "
+                   "is included in the calibration",
         "footprint_note": "**{size}** fits a 128 GB Mac, where the unpruned 148 GB "
                           "4-bit build does not",
-        "calibration_note": None,  # written once the Small eval numbers exist
-        "builds": {},
+        "calibration_note": """Inkling-Small is multimodal, and expert saliency was profiled over a mixed corpus of
+**text (code + 15 languages + reasoning), 200 real images, and 180 speech clips** run
+through the full vision and audio paths. On this model that is not optional: **47.7
+experts per layer are >50% audio-driven and 22.3 are >50% image-driven** — about 27% of
+all experts serve primarily non-text input, and adding audio to the calibration dropped
+the cold-expert count from 0.65 to 0.15 per layer. Experts that only ever fire on speech
+look worthless to a text-only profiler and get pruned first, which is how the 975B model
+lost speech transcription (word-overlap 0.88 → 0.57) while its text perplexity still
+looked fine. Profiling all three modalities keeps them. On held-out tests this build
+scores **vision {vis}** and **audio {aud}** word-overlap — both at the unpruned build's
+level.""",
+        "ppl_caveat": """
+**Read that −8.4% as "no measurable change", not as pruning improving the model.**
+Perplexity was measured on two independent held-out sets: this one has REAP-25 at
+**−8.4%** vs the unpruned 4-bit, a second one has it at **+0.55%**. Sets that small
+disagree by a few percent in either direction, so the defensible claim is that a 25%
+expert prune costs nothing measurable here — not that it helps.
+
+**50% pruning is a different story and is deliberately not published.** It was built and
+evaluated: text perplexity roughly **doubled** (+88% / +105% on the two sets) and speech
+transcription fell from **0.874 to 0.702**, so it was dropped rather than shipped with a
+warning. Inkling-Small is meaningfully less prunable than the 975B model, whose REAP-50
+cost ~22%.""",
+        "builds": {
+            "REAP25-4bit": (192, 25, "~112 GB", 4.992, "−8.4%", "87.5%", "6/6", "0.896",
+                            "no measurable loss — the build to take for a 128 GB Mac"),
+        },
     },
 }
 
@@ -139,7 +165,8 @@ is only *lightly* prunable — reflected below.
 
 This build: **text perplexity {ppl} ({delta} vs the unpruned 4-bit)**, **vision {vis}**
 (held-out image ID), **audio {aud}** (held-out speech transcription word-overlap),
-{retained} of router-weighted expert contribution retained. Pruning is applied to the
+{retained} of router-weighted expert contribution retained.
+{meta.get("ppl_caveat", "")} Pruning is applied to the
 already-quantized build; because expert subsetting is along the expert axis and
 affine-quant groups run along the hidden axis, it is **bit-identical to pruning the bf16
 source then requantizing**.

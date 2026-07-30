@@ -81,11 +81,14 @@ The quantized quality is effectively lossless here — even 4-bit reproduces the
 | [**8-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-8bit) | ~280 GB | 5.569 | — | ≥ 384 GB |
 | [**6-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-6bit) | ~214 GB | 5.569 | 0.0% | ≥ 256 GB |
 | [**4-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-4bit) | ~148 GB | 5.452 | −2.1% | 192 GB Mac |
+| [**REAP-25 4-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-REAP25-4bit) | ~112 GB | 4.992 | −8.4% † | **128 GB Mac** |
 | [3-bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-3bit) ⚠️ | ~116 GB | 6.706 | **+20.4%** | 128 GB Mac (tight) |
+
+† No measurable change, not an improvement — see [REAP builds](#-reap-pruned-builds-smaller-expert-pruned) below.
 
 **4-bit is the one to take.** Its perplexity sits at the 6/8-bit level — the −2.1% is eval-set noise, not 4-bit genuinely beating higher precision; the honest reading is "no measurable loss down to 4-bit." Going up to 6- or 8-bit buys nothing here.
 
-**3-bit is degraded and marked experimental.** +20% perplexity is the same magnitude as REAP-50 on the big model. It answers direct questions correctly but falls into repetition loops and emits stray glyphs afterwards. At ~116 GB it also only *just* fits a 128 GB Mac and needs `iogpu.wired_limit_mb` raised near the ceiling. For that memory budget, prefer **REAP-25 at 4-bit** below — same size class, far less damage.
+**For a 128 GB Mac, take REAP-25, not 3-bit.** They are the same size (112 vs 116 GB) and the gap is not close: REAP-25 costs nothing measurable, while 3-bit costs +20.4% perplexity, loops on repetition and emits stray glyphs after its answers. 3-bit remains published as the fallback for anyone who wants an unpruned expert set at that footprint, but it is marked experimental for good reason.
 
 ## 🧬 REAP-pruned builds (smaller, expert-pruned)
 
@@ -100,7 +103,25 @@ The quantized quality is effectively lossless here — even 4-bit reproduces the
 | [**REAP-25**](https://huggingface.co/pipenetwork/Inkling-MLX-REAP25-4bit) | 192 | ~402 GB | 3.946 | **+3.0%** | 6/6 | 0.87 |
 | [REAP-50](https://huggingface.co/pipenetwork/Inkling-MLX-REAP50-4bit) | 128 | ~272 GB | 4.682 | +22.2% ⚠️ | 5/6 | 0.87 |
 
-(Text-only calibration scored **2/6** vision; text+image left audio at **0.57** — hence the full multimodal recalibration, which recovers both at no text cost.) **REAP-25** is the sweet spot: a real size cut that clears the 512 GB memory cliff (comfortable eager/wired load) for ~3% text perplexity, with vision and audio intact. REAP-50 keeps audio but text and fine-grained vision degrade — experimental only. Reproduce with `scripts/profile_experts_mm.py` → `scripts/prune_build.py <usage.npz> mm` → `scripts/eval_build.py`.
+(Text-only calibration scored **2/6** vision; text+image left audio at **0.57** — hence the full multimodal recalibration, which recovers both at no text cost.) **REAP-25** is the sweet spot: a real size cut that clears the 512 GB memory cliff (comfortable eager/wired load) for ~3% text perplexity, with vision and audio intact. REAP-50 keeps audio but text and fine-grained vision degrade — experimental only.
+
+### Inkling-Small: REAP-25 is free, REAP-50 is not
+
+Same procedure, its own calibration and its own numbers — prunability does **not** transfer between family members:
+
+| Build | Experts kept | Size | Text ppl | vs unpruned | Vision | Audio |
+|---|---:|---:|---:|---:|---:|---:|
+| [4-bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-4bit) (unpruned) | 256 | ~148 GB | 5.452 | — | 6/6 | 0.874 |
+| [**REAP-25**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-REAP25-4bit) | 192 | ~112 GB | 4.992 | **−8.4% / +0.55%** † | 6/6 | 0.896 |
+| REAP-50 *(not published)* | 128 | ~76 GB | 10.238 | **+88% / +105%** | 6/6 | **0.702** |
+
+† Measured on two independent held-out sets, which disagree in sign. The claim is "no measurable cost at 25% pruning", not that pruning improves the model.
+
+**Inkling-Small is less prunable than the 975B model**, and the profile says why: with audio in the calibration it has only **0.15 cold experts per layer** (vs ~1), because **47.7 experts/layer are >50% audio-driven** and 22.3 are >50% image-driven — ~27% of experts serve primarily non-text input. There is very little dead weight to remove. At 25% the saliency ranking still finds it; at 50% it is cutting into live audio-grounding experts, and speech transcription drops 0.874 → 0.702 while perplexity doubles. So REAP-50 was built, measured, and **dropped rather than published** — unlike on the big model, where +22% was defensible as an experimental build.
+
+Worth noting: saliency retention *mispredicted* this. Small retains less saliency than the big model at every ratio (87.5% vs 90.3% at 25%), which suggested it would pay more — it paid less at 25% and far more at 50%. Retention is a routing statistic, not a quality metric; the eval is what decides.
+
+Reproduce with `scripts/fetch_calib_assets.sh` → `scripts/build_calib.py` → `scripts/profile_experts_mm.py` → `scripts/prune_build.py <usage.npz>` → `scripts/eval_build.py`.
 
 ## 🛠️ Prerequisites
 
