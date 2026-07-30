@@ -26,6 +26,19 @@ if [[ ! -d LibriSpeech/dev-clean ]]; then
   tar xzf dev-clean.tar.gz && rm dev-clean.tar.gz
 fi
 
+# Pallas's cat (manul) — the fine-grained image-ID probe in scripts/eval_build.py.
+# Imagenette's 10 classes are coarse; this one separates a model that really grounds
+# visual features from one that pattern-matches ("brown bear" was the failure mode
+# when expert pruning was calibrated on text alone).
+# "Otocolobus manul by Henry Söderlund", CC BY 2.0 — https://commons.wikimedia.org/wiki/File:Otocolobus_manul_by_Henry_S%C3%B6derlund.jpg
+if [[ ! -f pallas_cat.jpg ]]; then
+  echo "==== Pallas's cat probe image -> $DEST ===="
+  curl -fL -A "inkling-mlx-eval/1.0" -o pallas_cat.jpg \
+    "https://commons.wikimedia.org/wiki/Special:FilePath/Otocolobus%20manul%20by%20Henry%20S%C3%B6derlund.jpg?width=800" || \
+    echo "  (optional probe image unavailable — eval_build.py will skip it)"
+fi
+
 echo "images: $(find imagenette2-320 -name '*.JPEG' | wc -l | tr -d ' ')"
 echo "audio:  $(find LibriSpeech/dev-clean -name '*.flac' | wc -l | tr -d ' ')"
+echo "probe:  $([[ -f pallas_cat.jpg ]] && echo 'pallas_cat.jpg ok' || echo 'absent')"
 echo "CALIB ASSETS OK -> $DEST"

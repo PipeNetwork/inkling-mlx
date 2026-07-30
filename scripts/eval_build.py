@@ -44,7 +44,7 @@ def img_first(w):
 
 
 IMG_SPECS = [
-    ("/tmp/test_cat.jpeg", ["cat", "feline", "lynx", "manul"], "Pallas's cat"),
+    (_paths.asset("pallas_cat.jpg"), ["cat", "feline", "lynx", "manul"], "Pallas's cat"),
     (img_first("n02102040"), ["dog", "spaniel", "springer", "pupp", "canine"], "dog"),
     (img_first("n03028079"), ["church", "cathedral", "chapel", "building"], "church"),
     (img_first("n03445777"), ["golf", "ball"], "golf ball"),
@@ -84,9 +84,12 @@ print(f"[beval] AUDIO {a_pass}/{len(AUD)}  mean_overlap {mean_ov}", flush=True)
 
 # ---- image ----
 i_pass = 0
+i_total = 0
 for path, kws, label in IMG_SPECS:
     if not path or not os.path.exists(path):
+        print(f"[beval] IMAGE probe absent, not scored: {label} ({path})", flush=True)
         continue
+    i_total += 1
     inp = proc.apply([{"role": "user", "content": [
         {"type": "image", "image": Image.open(path).convert("RGB")},
         {"type": "text", "text": "What is the main subject of this image? Answer in one sentence."}]}],
@@ -95,7 +98,7 @@ for path, kws, label in IMG_SPECS:
                           pixel_values=inp.get("pixel_values"))
     resp = tok.decode(out[len(inp["input_ids"]):]).lower()
     mx.clear_cache(); i_pass += any(k in resp for k in kws)
-print(f"[beval] IMAGE {i_pass}/{len(IMG_SPECS)}", flush=True)
+print(f"[beval] IMAGE {i_pass}/{i_total}", flush=True)
 
 # ---- text perplexity ----
 tot_nll, tot_tok = 0.0, 0
@@ -113,6 +116,6 @@ print(f"[beval] PPL {ppl}", flush=True)
 
 res = json.load(open(OUT)) if os.path.exists(OUT) else {}
 res[os.path.basename(MODEL)] = {"audio_pass": a_pass, "audio_mean_overlap": mean_ov,
-                                "image_pass": i_pass, "image_n": len(IMG_SPECS), "ppl": ppl}
+                                "image_pass": i_pass, "image_n": i_total, "ppl": ppl}
 json.dump(res, open(OUT, "w"), indent=2)
 print(f"[beval] saved -> {OUT}", flush=True)
