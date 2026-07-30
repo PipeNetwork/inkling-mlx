@@ -49,8 +49,11 @@ FAMILIES = {
     "Inkling-Small": {
         "base_model": "thinkingmachines/Inkling-Small",
         "params": "276B-total / 12B-active",
-        "variants": ["bf16", "8bit", "6bit", "4bit", "3bit"],
-        "sizes": {"bf16": "~527 GB", "8bit": "~280 GB", "6bit": "~214 GB",
+        # bf16 is deliberately not published: it is bit-identical to the upstream
+        # checkpoint (verified by scripts/verify_bf16_passthrough.py), does not fit in
+        # a 512 GB Mac, and regenerates in ~3 min via scripts/convert_all.sh.
+        "variants": ["8bit", "6bit", "4bit", "3bit"],
+        "sizes": {"8bit": "~280 GB", "6bit": "~214 GB",
                   "4bit": "~148 GB", "3bit": "~116 GB"},
         "bf16_note": "~527 GB",
         "hidden_size": 4096,
@@ -191,6 +194,8 @@ are ported; the multi-token-prediction head is dropped (inference-irrelevant).
 {"Perplexity is teacher-forcing over one fixed held-out set (prose / code / reasoning / multilingual) — identical inputs across builds, so the columns compare directly. 4-bit shows no measurable loss vs 8-bit." if ppl else ""}
 
 {"There is also a **REAP-pruned** build: [REAP25-4bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-REAP25-4bit) keeps 4-bit precision with 192 of 256 routed experts, fitting a **128 GB Mac** at ~112 GB for no measurable perplexity cost, with vision and speech intact." if family == "Inkling-Small" else ""}
+
+{"No bf16 build is published. The MLX bf16 conversion is bit-identical to the upstream checkpoint (name-mapping and layout only — the dtype cast is a no-op), so it would carry nothing [" + meta["base_model"] + "](https://huggingface.co/" + meta["base_model"] + ") does not already have, and at ~527 GB it does not fit a 512 GB Mac. If you want it as a requant source, `scripts/convert_all.sh` regenerates it from the upstream weights in about three minutes." if family == "Inkling-Small" else ""}
 
 {quant_para}
 

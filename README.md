@@ -40,7 +40,7 @@ one of the least explored frontiers on our planet.
 | 🍎 **Native Apple Silicon** | pure MLX; no CUDA, no PyTorch for inference |
 | 🧩 **Full architecture** | hybrid local/global attention, per-head QK-norm, relative-position bias, **4 short-convs/layer**, sigmoid MoE router (256 experts, top-6 + 2 shared "sink"), muP logits |
 | 🖼️ **Multimodal towers** | HMLP vision + dMel audio encoders ported & numerically validated |
-| 📦 **3 / 4 / 6 / 8-bit + bf16** | standard MLX affine group quant; 4-bit runs the full 975B model in ~496 GB, or Inkling-Small in ~148 GB |
+| 📦 **3 / 4 / 6 / 8-bit + bf16** | standard MLX affine group quant; 4-bit runs the full 975B model in ~496 GB, or Inkling-Small in ~148 GB (REAP-25: ~112 GB) |
 | 👥 **Both family members** | one code path for Inkling (975B-A41B) and Inkling-Small (276B-A12B) — all dims read from `config.json` |
 | 🌊 **Streaming convert** | quantizes tensor-by-tensor — never holds the 1.9 TB model in memory |
 | ✅ **Validated** | fp32 parity vs reference + coherent real generation (see [Validation](#-validation)) |
@@ -77,7 +77,6 @@ The quantized quality is effectively lossless here — even 4-bit reproduces the
 
 | Build | Size | Text ppl | vs 8-bit | Runs on |
 |---|---:|---:|---:|---|
-| [bf16](https://huggingface.co/pipenetwork/Inkling-Small-MLX-bf16) | ~527 GB | — | — | reference / requant source |
 | [**8-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-8bit) | ~280 GB | 5.569 | — | ≥ 384 GB |
 | [**6-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-6bit) | ~214 GB | 5.569 | 0.0% | ≥ 256 GB |
 | [**4-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-4bit) | ~148 GB | 5.452 | −2.1% | 192 GB Mac |
@@ -85,6 +84,8 @@ The quantized quality is effectively lossless here — even 4-bit reproduces the
 | [3-bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-3bit) ⚠️ | ~116 GB | 6.706 | **+20.4%** | 128 GB Mac (tight) |
 
 † No measurable change, not an improvement — see [REAP builds](#-reap-pruned-builds-smaller-expert-pruned) below.
+
+**No bf16 build is published for Inkling-Small**, deliberately. The MLX bf16 conversion is bit-identical to the upstream checkpoint (name-mapping and layout only; the dtype cast is a no-op — verified with `scripts/verify_bf16_passthrough.py`), so it carries nothing [thinkingmachines/Inkling-Small](https://huggingface.co/thinkingmachines/Inkling-Small) does not already have, and at ~527 GB it does not fit a 512 GB Mac. Regenerate it in ~3 minutes with `scripts/convert_all.sh` if you want a local requant source.
 
 **4-bit is the one to take.** Its perplexity sits at the 6/8-bit level — the −2.1% is eval-set noise, not 4-bit genuinely beating higher precision; the honest reading is "no measurable loss down to 4-bit." Going up to 6- or 8-bit buys nothing here.
 
