@@ -25,6 +25,14 @@ NOTES = {
     "8bit": "near-lossless",
     "6bit": "high quality",
     "4bit": "balanced default",
+    "3bit": "⚠️ experimental — visibly degraded",
+}
+
+# Measured text perplexity per build, one fixed held-out set (identical inputs
+# across builds, so the deltas are directly comparable). None = not measured.
+PPL = {
+    "Inkling": {},
+    "Inkling-Small": {"8bit": 5.569, "6bit": 5.569, "4bit": 5.452, "3bit": 6.706},
 }
 
 # Per-family facts. `variants` is the model-card table order; `sizes` is the
@@ -41,8 +49,9 @@ FAMILIES = {
     "Inkling-Small": {
         "base_model": "thinkingmachines/Inkling-Small",
         "params": "276B-total / 12B-active",
-        "variants": ["bf16", "8bit", "6bit", "4bit"],
-        "sizes": {"bf16": "~527 GB", "8bit": "~280 GB", "6bit": "~214 GB", "4bit": "~148 GB"},
+        "variants": ["bf16", "8bit", "6bit", "4bit", "3bit"],
+        "sizes": {"bf16": "~527 GB", "8bit": "~280 GB", "6bit": "~214 GB",
+                  "4bit": "~148 GB", "3bit": "~116 GB"},
         "bf16_note": "~527 GB",
         "hidden_size": 4096,
     },
@@ -83,10 +92,31 @@ def measured_sizes(family: str, src: str) -> dict:
 
 def model_card(family: str, name: str, sizes: dict) -> str:
     meta = FAMILIES[family]
+    ppl = PPL.get(family, {})
+    ppl_col = " Text ppl |" if ppl else ""
+    ppl_sep = " ---: |" if ppl else ""
     rows = "\n".join(
-        f"| [{n}](https://huggingface.co/{REPO_OWNER}/{family}-MLX-{n}) | {sizes[n]} | {NOTES[n]} |"
+        f"| [{n}](https://huggingface.co/{REPO_OWNER}/{family}-MLX-{n}) | {sizes[n]} |"
+        + (f" {ppl[n]:.3f} |" if ppl.get(n) else (" — |" if ppl else ""))
+        + f" {NOTES[n]} |"
         for n in meta["variants"]
     )
+    header = f"| Variant | Size |{ppl_col} Notes |\n|---|---:|{ppl_sep}---|"
+
+    warning = ""
+    if name == "3bit":
+        warning = """
+> ### ⚠️ This build is experimental
+>
+> 3-bit measures **+20% text perplexity** vs 8-bit (6.706 vs 5.569) — the same
+> magnitude of damage as 50% expert pruning. It answers direct factual and coding
+> questions correctly, but after the answer it tends to fall into repetition loops
+> and emit stray glyphs. At ~116 GB it also only *just* fits a 128 GB Mac, needing
+> `iogpu.wired_limit_mb` raised close to the ceiling.
+>
+> **Prefer [4-bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-4bit)** if you
+> have the memory — it shows no measurable loss vs 8-bit.
+"""
     if name == "bf16":
         precision = (
             "converted to MLX at **bfloat16** — no quantization, the reference build "
@@ -94,8 +124,9 @@ def model_card(family: str, name: str, sizes: dict) -> str:
         )
         quant_para = """## Quantization
 
-None. This is the unquantized bf16 conversion. For builds that fit in a single Mac's
-unified memory, see the 8/6/4-bit variants in the table above."""
+None. This is the unquantized bf16 conversion — useful as an evaluation reference or
+as the source for your own quantization sweep. It does **not** fit in a single Mac's
+unified memory; for builds that do, see the table above."""
     else:
         bits = name.replace("bit", "")
         precision = f"quantized to **{bits}-bit** (affine group quant, group size 64)."
@@ -141,7 +172,7 @@ MLX (Apple Silicon) conversion of
 {precision}
 
 **Code / loader:** [github.com/PipeNetwork/inkling-mlx](https://github.com/PipeNetwork/inkling-mlx)
-
+{warning}
 {family.replace("-", " ") if family != "Inkling" else "Inkling"} is a **{meta["params"]}**
 sparse-MoE, natively multimodal model (text + image/video + audio → text). This is the
 **full multimodal** conversion: all three towers (text backbone, HMLP vision, dMel audio)
@@ -149,9 +180,10 @@ are ported; the multi-token-prediction head is dropped (inference-irrelevant).
 
 ## Builds
 
-| Variant | Size | Notes |
-|---|---|---|
+{header}
 {rows}
+
+{"Perplexity is teacher-forcing over one fixed held-out set (prose / code / reasoning / multilingual) — identical inputs across builds, so the columns compare directly. 4-bit shows no measurable loss vs 8-bit." if ppl else ""}
 
 {quant_para}
 
