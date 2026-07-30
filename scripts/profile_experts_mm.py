@@ -20,12 +20,13 @@ from inkling_mlx.processing import InklingProcessor
 from transformers import AutoTokenizer
 from PIL import Image
 from audio_util import load_wav, librispeech_index, content_words
+import _paths
 
-MODEL = sys.argv[1] if len(sys.argv) > 1 else "/Users/david/llm/inkling-mlx-out/Inkling-4bit"
-CALIB = "/Users/david/llm/inkling-mlx-out/calib_wide.json"
-IMGROOT = "/Users/david/llm/inkling-mlx-out/imagenette2-320/train"
-LSROOT = "/Users/david/llm/inkling-mlx-out/LibriSpeech/dev-clean"
-OUT = "/Users/david/llm/inkling-mlx-out/expert_usage_mm.npz"
+MODEL = sys.argv[1] if len(sys.argv) > 1 else _paths.build("4bit")
+CALIB = _paths.asset("calib_wide.json")
+IMGROOT = _paths.asset("imagenette2-320", "train")
+LSROOT = _paths.asset("LibriSpeech", "dev-clean")
+OUT = _paths.asset("expert_usage_mm.npz")
 MAX_TOK = 256
 N_IMG = 200
 N_AUD = 180

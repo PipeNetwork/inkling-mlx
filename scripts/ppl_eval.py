@@ -9,12 +9,14 @@ import json, os, sys, time, math
 import numpy as np
 import mlx.core as mx
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from inkling_mlx.load import load
 from inkling_mlx.generate import greedy_generate
 from transformers import AutoTokenizer
+import _paths
 
 MODEL = sys.argv[1]
-OUT = "/Users/david/llm/inkling-mlx-out/ppl_results.json"
+OUT = _paths.asset("ppl_results.json")
 try: mx.set_wired_limit(int(500e9))
 except Exception as e: print("[warn]", e, flush=True)
 

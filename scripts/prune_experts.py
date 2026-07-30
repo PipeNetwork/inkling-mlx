@@ -8,11 +8,15 @@ per-layer selection = REAP's per-layer p% pruning).
 
     python scripts/prune_experts.py <prune_ratio e.g. 0.5>
 """
+import os
 import sys
 import numpy as np
 
-USAGE = "/Users/david/llm/inkling-mlx-out/expert_usage.npz"
-OUT = "/Users/david/llm/inkling-mlx-out/keep_indices.npz"
+sys.path.insert(0, os.path.dirname(__file__))
+import _paths
+
+USAGE = _paths.asset("expert_usage.npz")
+OUT = _paths.asset("keep_indices.npz")
 ratio = float(sys.argv[1]) if len(sys.argv) > 1 else 0.5
 
 d = np.load(USAGE)

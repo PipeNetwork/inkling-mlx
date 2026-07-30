@@ -14,11 +14,12 @@ from inkling_mlx.generate import greedy_generate
 from inkling_mlx.processing import InklingProcessor
 from transformers import AutoTokenizer
 from audio_util import load_wav, librispeech_index, transcription_overlap, content_words
+import _paths
 
 MODEL = sys.argv[1]
-OUT = "/Users/david/llm/inkling-mlx-out/build_eval.json"
-VAL = "/Users/david/llm/inkling-mlx-out/imagenette2-320/val"
-LS = "/Users/david/llm/inkling-mlx-out/LibriSpeech/dev-clean"
+OUT = _paths.asset("build_eval.json")
+VAL = _paths.asset("imagenette2-320", "val")
+LS = _paths.asset("LibriSpeech", "dev-clean")
 LAZY = os.environ.get("INKLING_LAZY") == "1"
 try: mx.set_wired_limit(int(500e9))
 except Exception as e: print("[warn]", e, flush=True)

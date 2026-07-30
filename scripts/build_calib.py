@@ -5,7 +5,10 @@ and curated math/reasoning/structured prompts. Robust to dataset/network failure
 """
 import glob, json, os, sys
 
-OUT = "/Users/david/llm/inkling-mlx-out/calib_wide.json"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _paths
+
+OUT = _paths.asset("calib_wide.json")
 chunks: list[str] = []
 
 
@@ -16,17 +19,26 @@ def add(text, max_chars=2400):
     chunks.append(text[:max_chars])
 
 
-# 1) local real code (diverse: python + rust)
-for pat in ("/Users/david/llm/inkling-mlx/inkling_mlx/*.py",
-            "/Users/david/llm/inkling-mlx/scripts/*.py",
-            "/Users/david/llm/hi/**/*.rs", "/Users/david/llm/hi/**/*.py",
-            "/Users/david/llm/longcat2-mlx/*.py"):
-    for f in glob.glob(pat, recursive=True)[:40]:
-        try:
-            add(open(f, encoding="utf-8", errors="ignore").read())
-        except Exception:
-            pass
-print(f"[calib] after local code: {len(chunks)} chunks", flush=True)
+# 1) local real code (diverse: python + rust). Roots are scanned rather than named
+# file-by-file, so the corpus doesn't silently shrink when a project moves away.
+# Override with INKLING_CODE_ROOTS=/path/a:/path/b.
+_default_roots = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # this repo
+CODE_ROOTS = os.environ.get("INKLING_CODE_ROOTS", _default_roots).split(":")
+SKIP = ("/target/", "/.venv/", "/node_modules/", "/__pycache__/", "/.git/")
+for root in CODE_ROOTS:
+    for ext, cap in (("py", 40), ("rs", 40)):
+        found = 0
+        for f in glob.iglob(os.path.join(root, "**", f"*.{ext}"), recursive=True):
+            if any(s in f for s in SKIP):
+                continue
+            try:
+                add(open(f, encoding="utf-8", errors="ignore").read())
+            except Exception:
+                continue
+            found += 1
+            if found >= cap:
+                break
+print(f"[calib] after local code ({len(CODE_ROOTS)} roots): {len(chunks)} chunks", flush=True)
 
 # 2) streamed multilingual wikipedia (best-effort)
 LANGS = ["en", "zh", "es", "fr", "de", "ru", "ja", "ar", "hi", "pt", "ko", "it", "tr", "vi", "fa"]

@@ -1,63 +1,105 @@
-"""Prepare + upload one Inkling MLX quant to the Hub as pipenetwork/Inkling-MLX-<name>.
+"""Prepare + upload one Inkling MLX build to the Hub as pipenetwork/<Family>-MLX-<name>.
+
+Handles both family members — `Inkling` (975B-A41B) and `Inkling-Small` (276B-A12B) —
+detected from the build's own config.json, or forced with `--family`.
 
 Bundles the `inkling_mlx` loader into the repo (the arch is not in stock mlx-lm/mlx-vlm)
-and writes an accurate model card, then uploads the whole folder (resumable)."""
+and writes an accurate model card, then uploads the whole folder (resumable).
 
+Usage:  python scripts/upload_quant.py <variant> <build-dir> [--family Inkling-Small]
+"""
+
+import argparse
 import glob
+import json
 import os
 import shutil
-import sys
 
 from huggingface_hub import HfApi, create_repo
 
 REPO_OWNER = "pipenetwork"
-SIZES = {"8bit": "~937 GB", "6bit": "~717 GB", "4bit": "~490 GB"}
-NOTES = {"8bit": "near-lossless", "6bit": "high quality", "4bit": "balanced default"}
 PKG_DIR = os.path.join(os.path.dirname(__file__), "..", "inkling_mlx")
 
+NOTES = {
+    "bf16": "reference precision",
+    "8bit": "near-lossless",
+    "6bit": "high quality",
+    "4bit": "balanced default",
+}
 
-def model_card(name: str) -> str:
-    bits = name.replace("bit", "")
+# Per-family facts. `variants` is the model-card table order; `sizes` is the
+# fallback when a sibling build dir isn't on disk to measure.
+FAMILIES = {
+    "Inkling": {
+        "base_model": "thinkingmachines/Inkling",
+        "params": "975B-total / 41B-active",
+        "variants": ["8bit", "6bit", "4bit"],
+        "sizes": {"8bit": "~937 GB", "6bit": "~717 GB", "4bit": "~490 GB"},
+        "bf16_note": "~1.9 TB",
+        "hidden_size": 6144,
+    },
+    "Inkling-Small": {
+        "base_model": "thinkingmachines/Inkling-Small",
+        "params": "276B-total / 12B-active",
+        "variants": ["bf16", "8bit", "6bit", "4bit"],
+        "sizes": {"bf16": "~527 GB", "8bit": "~280 GB", "6bit": "~214 GB", "4bit": "~148 GB"},
+        "bf16_note": "~527 GB",
+        "hidden_size": 4096,
+    },
+}
+
+
+def detect_family(src: str) -> str:
+    """Identify the family from the build's config (hidden_size is unambiguous)."""
+    cfg = json.load(open(os.path.join(src, "config.json")))
+    h = cfg.get("text_config", {}).get("hidden_size")
+    for fam, meta in FAMILIES.items():
+        if meta["hidden_size"] == h:
+            return fam
+    raise SystemExit(f"unknown Inkling family: text_config.hidden_size={h}")
+
+
+def _dir_size_gb(path: str) -> float:
+    return sum(
+        os.path.getsize(os.path.join(dp, f))
+        for dp, _, fs in os.walk(path)
+        for f in fs
+        if f.endswith(".safetensors")
+    ) / 1e9
+
+
+def measured_sizes(family: str, src: str) -> dict:
+    """Prefer real on-disk sizes of the sibling builds; fall back to the table."""
+    sizes = dict(FAMILIES[family]["sizes"])
+    outroot = os.path.dirname(os.path.abspath(src))
+    for v in FAMILIES[family]["variants"]:
+        d = os.path.join(outroot, f"{family}-{v}")
+        if os.path.isdir(d):
+            gb = _dir_size_gb(d)
+            if gb > 0:
+                sizes[v] = f"~{gb:.0f} GB"
+    return sizes
+
+
+def model_card(family: str, name: str, sizes: dict) -> str:
+    meta = FAMILIES[family]
     rows = "\n".join(
-        f"| [{n}](https://huggingface.co/{REPO_OWNER}/Inkling-MLX-{n}) | {SIZES[n]} | {NOTES[n]} |"
-        for n in ("8bit", "6bit", "4bit")
+        f"| [{n}](https://huggingface.co/{REPO_OWNER}/{family}-MLX-{n}) | {sizes[n]} | {NOTES[n]} |"
+        for n in meta["variants"]
     )
-    return f"""---
-license: apache-2.0
-base_model: thinkingmachines/Inkling
-base_model_relation: quantized
-pipeline_tag: image-text-to-text
-library_name: mlx
-tags:
-- mlx
-- moe
-- multimodal
-- inkling
-- thinking-machines
----
+    if name == "bf16":
+        precision = (
+            "converted to MLX at **bfloat16** — no quantization, the reference build "
+            "for evaluating the quantized ones."
+        )
+        quant_para = """## Quantization
 
-# Inkling-MLX-{name}
-
-**Built with Inkling (Thinking Machines Lab).**
-
-MLX (Apple Silicon) conversion of
-[thinkingmachines/Inkling](https://huggingface.co/thinkingmachines/Inkling),
-quantized to **{bits}-bit** (affine group quant, group size 64).
-
-**Code / loader:** [github.com/PipeNetwork/inkling-mlx](https://github.com/PipeNetwork/inkling-mlx)
-
-Inkling is a **975B-total / 41B-active** sparse-MoE, natively multimodal model
-(text + image/video + audio → text). This is the **full multimodal** conversion:
-all three towers (text backbone, HMLP vision, dMel audio) are ported; the
-multi-token-prediction head is dropped (inference-irrelevant).
-
-## Quantizations
-
-| Variant | Size | Notes |
-|---|---|---|
-{rows}
-
-## Quantization scheme: affine int4 (not NVFP4 / MXFP4)
+None. This is the unquantized bf16 conversion. For builds that fit in a single Mac's
+unified memory, see the 8/6/4-bit variants in the table above."""
+    else:
+        bits = name.replace("bit", "")
+        precision = f"quantized to **{bits}-bit** (affine group quant, group size 64)."
+        quant_para = """## Quantization scheme: affine int4 (not NVFP4 / MXFP4)
 
 MLX supports FP4 modes and Thinking Machines ships an
 [Inkling-NVFP4](https://huggingface.co/thinkingmachines/Inkling-NVFP4) checkpoint — so for
@@ -74,7 +116,44 @@ Affine int4 is the most faithful: it is *asymmetric* (per-group scale **and** ze
 uniform levels), which centers on Inkling's near-Gaussian expert weights better than
 symmetric FP4's fixed non-uniform levels. FP4's real payoff is heavy-tailed *activations* and
 native Blackwell FP4 tensor cores — neither helps weight fidelity on Apple Silicon, where MLX
-would dequantize FP4 anyway. So these builds use affine int4.
+would dequantize FP4 anyway. So these builds use affine int4."""
+
+    return f"""---
+license: apache-2.0
+base_model: {meta["base_model"]}
+base_model_relation: quantized
+pipeline_tag: image-text-to-text
+library_name: mlx
+tags:
+- mlx
+- moe
+- multimodal
+- inkling
+- thinking-machines
+---
+
+# {family}-MLX-{name}
+
+**Built with Inkling (Thinking Machines Lab).**
+
+MLX (Apple Silicon) conversion of
+[{meta["base_model"]}](https://huggingface.co/{meta["base_model"]}),
+{precision}
+
+**Code / loader:** [github.com/PipeNetwork/inkling-mlx](https://github.com/PipeNetwork/inkling-mlx)
+
+{family.replace("-", " ") if family != "Inkling" else "Inkling"} is a **{meta["params"]}**
+sparse-MoE, natively multimodal model (text + image/video + audio → text). This is the
+**full multimodal** conversion: all three towers (text backbone, HMLP vision, dMel audio)
+are ported; the multi-token-prediction head is dropped (inference-irrelevant).
+
+## Builds
+
+| Variant | Size | Notes |
+|---|---|---|
+{rows}
+
+{quant_para}
 
 ## ⚠️ Loading requires the bundled `inkling_mlx` loader
 
@@ -108,31 +187,39 @@ size above).
   vision/audio matmuls. Kept in higher precision: the MoE router, RMSNorms, the four
   short-convolutions per layer, and the relative-position bias.
 
-Conversion is streaming (tensor-by-tensor; the ~1.9 TB bf16 model never fully loads
-into RAM) and was validated with fp32 numerical parity against transformers PR #47347.
+Conversion is streaming (tensor-by-tensor; the {meta["bf16_note"]} bf16 model never fully
+loads into RAM) and was validated with fp32 numerical parity against transformers PR #47347.
 License: Apache-2.0 (inherits the base model).
 """
 
 
 def main():
-    name = sys.argv[1]                       # e.g. "8bit"
-    src = sys.argv[2]                         # local quant dir
-    repo = f"{REPO_OWNER}/Inkling-MLX-{name}"
+    ap = argparse.ArgumentParser()
+    ap.add_argument("name", help="variant, e.g. 4bit / 6bit / 8bit / bf16")
+    ap.add_argument("src", help="local build dir")
+    ap.add_argument("--family", choices=sorted(FAMILIES), default=None,
+                    help="override the family detected from the build's config.json")
+    args = ap.parse_args()
+
+    family = args.family or detect_family(args.src)
+    if args.name not in FAMILIES[family]["variants"]:
+        raise SystemExit(f"{family}: unknown variant {args.name!r}")
+    repo = f"{REPO_OWNER}/{family}-MLX-{args.name}"
 
     # fail fast on auth/repo before any large transfer
     create_repo(repo, repo_type="model", private=False, exist_ok=True)
 
     # bundle the loader package (only .py, no __pycache__)
-    pkg_dst = os.path.join(src, "inkling_mlx")
+    pkg_dst = os.path.join(args.src, "inkling_mlx")
     os.makedirs(pkg_dst, exist_ok=True)
     for f in glob.glob(os.path.join(PKG_DIR, "*.py")):
         shutil.copy2(f, pkg_dst)
 
-    with open(os.path.join(src, "README.md"), "w") as fh:
-        fh.write(model_card(name))
+    with open(os.path.join(args.src, "README.md"), "w") as fh:
+        fh.write(model_card(family, args.name, measured_sizes(family, args.src)))
 
     api = HfApi()
-    api.upload_large_folder(repo_id=repo, folder_path=src, repo_type="model")
+    api.upload_large_folder(repo_id=repo, folder_path=args.src, repo_type="model")
     print(f"UPLOADED {repo}")
 
 

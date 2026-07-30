@@ -10,11 +10,13 @@ import time
 import mlx.core as mx
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from inkling_mlx.load import load
 from inkling_mlx.generate import greedy_generate, load_tokenizer
+import _paths
 
-MODEL = sys.argv[1] if len(sys.argv) > 1 else "/Users/david/llm/inkling-mlx-out/Inkling-4bit"
-SRC = "/Users/david/llm/Inkling-src"
+MODEL = sys.argv[1] if len(sys.argv) > 1 else _paths.build("4bit")
+SRC = _paths.SRC
 PROMPTS = [
     "The capital of France is",
     "Here is a Python function that returns the nth Fibonacci number:\n\ndef fib(n):",

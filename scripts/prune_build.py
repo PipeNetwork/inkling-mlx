@@ -145,15 +145,18 @@ def prune_builds(src, outputs, usage_path):
 
 if __name__ == "__main__":
     import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import _paths
+
     mx.set_default_device(mx.cpu)   # CPU indexing: no Metal watchdog on the long stream
-    B = "/Users/david/llm/inkling-mlx-out"
-    SRC = f"{B}/Inkling-4bit"
-    USAGE = sys.argv[1] if len(sys.argv) > 1 else f"{B}/expert_usage.npz"
+    SRC = _paths.build("4bit")
+    USAGE = sys.argv[1] if len(sys.argv) > 1 else _paths.asset("expert_usage.npz")
     SUFFIX = sys.argv[2] if len(sys.argv) > 2 else ""      # e.g. "mm" -> Inkling-REAP25mm-4bit
+    # ratios: env-overridable, e.g. INKLING_REAP_RATIOS=25,50
+    ratios = [int(r) for r in os.environ.get("INKLING_REAP_RATIOS", "12,25,50").split(",")]
     OUTPUTS = {
-        f"REAP12{SUFFIX}": (0.12, f"{B}/Inkling-REAP12{SUFFIX}-4bit"),
-        f"REAP25{SUFFIX}": (0.25, f"{B}/Inkling-REAP25{SUFFIX}-4bit"),
-        f"REAP50{SUFFIX}": (0.50, f"{B}/Inkling-REAP50{SUFFIX}-4bit"),
+        f"REAP{r}{SUFFIX}": (r / 100.0, _paths.build(f"REAP{r}{SUFFIX}-4bit"))
+        for r in ratios
     }
     print(f"[prune] usage={USAGE} suffix={SUFFIX!r}", flush=True)
     prune_builds(SRC, OUTPUTS, USAGE)

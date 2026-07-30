@@ -1,6 +1,6 @@
 # Inkling · MLX
 
-Run **Thinking Machines Lab's [Inkling](https://huggingface.co/thinkingmachines/Inkling)** — a **975B-total / 41B-active** sparse-MoE, natively multimodal model — on Apple Silicon with [MLX](https://github.com/ml-explore/mlx).
+Run **Thinking Machines Lab's [Inkling](https://huggingface.co/thinkingmachines/Inkling)** — a **975B-total / 41B-active** sparse-MoE, natively multimodal model — and its smaller sibling **[Inkling-Small](https://huggingface.co/thinkingmachines/Inkling-Small)** (**276B-total / 12B-active**) on Apple Silicon with [MLX](https://github.com/ml-explore/mlx).
 
 <p>
 <a href="https://huggingface.co/pipenetwork"><img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models-ffcc00"></a>
@@ -11,6 +11,17 @@ Run **Thinking Machines Lab's [Inkling](https://huggingface.co/thinkingmachines/
 </p>
 
 This repo is a from-scratch MLX port of Inkling's `inkling_mm_model` architecture (not in stock `mlx-lm`/`mlx-vlm`) plus a **streaming** HF→MLX converter/quantizer that never loads the ~1.9 TB bf16 checkpoint into RAM.
+
+Both family members share one architecture and one code path — the port reads every dimension from `config.json`, so `Inkling-Small` needed no code changes at all:
+
+| | Inkling | Inkling-Small |
+|---|---:|---:|
+| total / active params | 975B / 41B | 276B / 12B |
+| hidden · layers | 6144 · 66 | 4096 · 42 |
+| attn heads (global · SWA-kv) | 64 · 16 | 32 · 8 |
+| dense · expert intermediate | 24576 · 3072 | 16384 · 2048 |
+| muP logit divisor | 24.0 | 16.0 |
+| experts (routed / top-k / shared) | 256 / 6 / 2 | 256 / 6 / 2 |
 
 ```text
 > What is the capital of France?
@@ -29,7 +40,8 @@ one of the least explored frontiers on our planet.
 | 🍎 **Native Apple Silicon** | pure MLX; no CUDA, no PyTorch for inference |
 | 🧩 **Full architecture** | hybrid local/global attention, per-head QK-norm, relative-position bias, **4 short-convs/layer**, sigmoid MoE router (256 experts, top-6 + 2 shared "sink"), muP logits |
 | 🖼️ **Multimodal towers** | HMLP vision + dMel audio encoders ported & numerically validated |
-| 📦 **4 / 6 / 8-bit** | standard MLX affine group quant; 4-bit runs the full 975B model in ~496 GB |
+| 📦 **3 / 4 / 6 / 8-bit + bf16** | standard MLX affine group quant; 4-bit runs the full 975B model in ~496 GB, or Inkling-Small in ~148 GB |
+| 👥 **Both family members** | one code path for Inkling (975B-A41B) and Inkling-Small (276B-A12B) — all dims read from `config.json` |
 | 🌊 **Streaming convert** | quantizes tensor-by-tensor — never holds the 1.9 TB model in memory |
 | ✅ **Validated** | fp32 parity vs reference + coherent real generation (see [Validation](#-validation)) |
 
@@ -51,6 +63,8 @@ tokens ─▶ embed ─▶ embed-norm ─┐
 
 ## 🗂️ Which build do I download?
 
+**Inkling** (975B-A41B):
+
 | Build | Size | Runs on |
 |---|---|---|
 | [**4-bit**](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) | ~496 GB | 512 GB Mac (M3 Ultra) |
@@ -58,6 +72,20 @@ tokens ─▶ embed ─▶ embed-norm ─┐
 | [**8-bit**](https://huggingface.co/pipenetwork/Inkling-MLX-8bit) | ~937 GB | ≥ ~1 TB |
 
 The quantized quality is effectively lossless here — even 4-bit reproduces the model's structure with ~100% confidence on the correct next token.
+
+**Inkling-Small** (276B-A12B) — perplexity measured on one fixed held-out set, so the columns are directly comparable:
+
+| Build | Size | Text ppl | vs 8-bit | Runs on |
+|---|---:|---:|---:|---|
+| [bf16](https://huggingface.co/pipenetwork/Inkling-Small-MLX-bf16) | ~527 GB | — | — | reference / requant source |
+| [**8-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-8bit) | ~280 GB | 5.569 | — | ≥ 384 GB |
+| [**6-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-6bit) | ~214 GB | 5.569 | 0.0% | ≥ 256 GB |
+| [**4-bit**](https://huggingface.co/pipenetwork/Inkling-Small-MLX-4bit) | ~148 GB | 5.452 | −2.1% | 192 GB Mac |
+| [3-bit](https://huggingface.co/pipenetwork/Inkling-Small-MLX-3bit) ⚠️ | ~116 GB | 6.706 | **+20.4%** | 128 GB Mac (tight) |
+
+**4-bit is the one to take.** Its perplexity sits at the 6/8-bit level — the −2.1% is eval-set noise, not 4-bit genuinely beating higher precision; the honest reading is "no measurable loss down to 4-bit." Going up to 6- or 8-bit buys nothing here.
+
+**3-bit is degraded and marked experimental.** +20% perplexity is the same magnitude as REAP-50 on the big model. It answers direct questions correctly but falls into repetition loops and emits stray glyphs afterwards. At ~116 GB it also only *just* fits a 128 GB Mac and needs `iogpu.wired_limit_mb` raised near the ceiling. For that memory budget, prefer **REAP-25 at 4-bit** below — same size class, far less damage.
 
 ## 🧬 REAP-pruned builds (smaller, expert-pruned)
 
@@ -154,16 +182,29 @@ Both scored **1.00** content-word overlap — including obscure proper nouns ("S
 ```bash
 # one build
 python -m inkling_mlx.convert_cli --src /path/Inkling-src --dst out-4bit --bits 4
-# standard sweep (bf16 + 8/6/4-bit)
-scripts/convert_all.sh /path/Inkling-src /path/out
+# standard sweep (4/6/8-bit + bf16), smallest first
+scripts/convert_all.sh /path/Inkling-src       /path/out  Inkling
+scripts/convert_all.sh /path/Inkling-Small-src /path/out  Inkling-Small
 
 # REAP-pruned build: profile expert saliency, then convert with --prune
-python scripts/profile_experts.py /path/out-4bit          # -> expert_usage.npz
+scripts/fetch_calib_assets.sh /path/out                   # imagenette + LibriSpeech
+python scripts/build_calib.py                             # -> calib_wide.json
+python scripts/profile_experts_mm.py /path/out-4bit       # -> expert_usage_mm.npz
 python scripts/prune_experts.py 0.25                      # -> keep_indices.npz (25% prune)
 python -m inkling_mlx.convert_cli --src /path/Inkling-src --dst out-reap25 --bits 4 \
        --prune /path/keep_indices.npz
 # (or prune an already-quantized build in one pass, bit-identically: scripts/prune_build.py)
 ```
+
+The script suite is shared between both family members. Point it at a sweep with:
+
+```bash
+export INKLING_OUT=/path/inkling-small-out       # build root + calibration assets
+export INKLING_SRC=/path/Inkling-Small-src       # HF source checkpoint
+export INKLING_PREFIX=Inkling-Small              # build-dir name prefix
+```
+
+Defaults reproduce the original 975B paths, so existing invocations are unchanged.
 
 Quantized: attention/MLP/expert projections, embeddings, vision/audio matmuls. Kept high-precision: the MoE router, RMSNorms, the four short-convs, and the relative-position bias. Conversion is streaming, so it runs in bounded memory regardless of model size.
 
