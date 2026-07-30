@@ -7,6 +7,7 @@ Bundles the `inkling_mlx` loader and writes a model card with the measured resul
     python scripts/upload_reap.py REAP12-4bit /path/Inkling-REAP12-4bit
 """
 import glob
+import json
 import os
 import shutil
 import sys
@@ -16,28 +17,73 @@ from huggingface_hub import HfApi, create_repo
 REPO_OWNER = "pipenetwork"
 PKG_DIR = os.path.join(os.path.dirname(__file__), "..", "inkling_mlx")
 
-# name -> (kept, prune %, size, text ppl, ppl delta, saliency retained, vision, audio, tag)
-# Calibration is MULTIMODAL (text + images + audio) — see model card. Numbers measured on
-# the published builds: text perplexity on a held-out set; vision = held-out image-ID
-# accuracy; audio = held-out speech transcription word-overlap.
-BUILDS = {
-    "REAP12-4bit": (225, 12, "~470 GB", 3.806, "-0.6%", "96.2%", "6/6", "0.88", "free lunch — text, vision AND audio intact"),
-    "REAP25-4bit": (192, 25, "~402 GB", 3.946, "+3.0%", "90.3%", "6/6", "0.87", "sweet spot — clears the 512 GB memory cliff"),
-    "REAP50-4bit": (128, 50, "~272 GB", 4.682, "+22.2%", "75.0%", "5/6", "0.87", "aggressive / experimental — text degraded"),
+# Per-family REAP results. Every number here is MEASURED on the published build —
+# nothing is carried over between family members, since routing statistics and
+# prunability differ. Build entry:
+#   name -> (kept, prune %, size, text ppl, ppl delta, saliency retained, vision, audio, tag)
+# Calibration is MULTIMODAL (text + images + audio) — see model card.
+FAMILIES = {
+    "Inkling": {
+        "base_model": "thinkingmachines/Inkling",
+        "hidden_size": 6144,
+        "unpruned": ("4bit", 256, "~490 GB", 3.830),
+        "routing": "routing entropy 0.922; only ~1 cold expert per layer under multimodal calibration",
+        "footprint_note": "**{size}** loads eager/wired-resident on a 512 GB machine "
+                          "without the memory-ceiling thrash (vs the 496 GB unpruned 4-bit)",
+        "calibration_note": """Inkling is multimodal, and expert saliency was profiled over a mixed corpus of **text
+(code + 15 languages + reasoning), 200 real images, and 180 speech clips** run through
+the full vision and audio paths. This is deliberate: a **text-only** calibration prunes
+experts that ground *visual* features (a Pallas's cat → *"brown bear"*, a golf ball →
+*"butterfly"*); adding only text+image then leaves *audio*-grounding experts unprotected
+(speech transcription word-overlap fell from 0.88 to 0.57 at 25% pruning) — all while
+text perplexity looked fine the whole time. Profiling over all three modalities keeps
+every expert that matters to any of them. On held-out tests this build scores **vision
+{vis}** (vs 2/6 text-only) and **audio {aud}** overlap (vs 0.57 text+image), at no extra
+text cost.""",
+        "builds": {
+            "REAP12-4bit": (225, 12, "~470 GB", 3.806, "-0.6%", "96.2%", "6/6", "0.88", "free lunch — text, vision AND audio intact"),
+            "REAP25-4bit": (192, 25, "~402 GB", 3.946, "+3.0%", "90.3%", "6/6", "0.87", "sweet spot — clears the 512 GB memory cliff"),
+            "REAP50-4bit": (128, 50, "~272 GB", 4.682, "+22.2%", "75.0%", "5/6", "0.87", "aggressive / experimental — text degraded"),
+        },
+    },
+    # Inkling-Small entries are populated from the measured eval — see
+    # scripts/eval_build.py. Left empty until then so nothing is published unmeasured.
+    "Inkling-Small": {
+        "base_model": "thinkingmachines/Inkling-Small",
+        "hidden_size": 4096,
+        "unpruned": ("4bit", 256, "~148 GB", 5.452),
+        "routing": None,           # set from the measured profile (see routing stats below)
+        "footprint_note": "**{size}** fits a 128 GB Mac, where the unpruned 148 GB "
+                          "4-bit build does not",
+        "calibration_note": None,  # written once the Small eval numbers exist
+        "builds": {},
+    },
 }
 
 
-def _table():
+def detect_family(src: str) -> str:
+    cfg = json.load(open(os.path.join(src, "config.json")))
+    h = cfg.get("text_config", {}).get("hidden_size")
+    for fam, meta in FAMILIES.items():
+        if meta["hidden_size"] == h:
+            return fam
+    raise SystemExit(f"unknown Inkling family: text_config.hidden_size={h}")
+
+
+def _table(family: str):
+    meta = FAMILIES[family]
+    uname, ukept, usize, uppl = meta["unpruned"]
     rows = ["| Build | Experts kept | Size | Text ppl | vs unpruned | Vision (image ID) | Audio (speech overlap) |",
             "|---|---:|---:|---:|---:|---:|---:|",
-            "| [Inkling-MLX-4bit](https://huggingface.co/pipenetwork/Inkling-MLX-4bit) (unpruned) | 256 | ~490 GB | 3.830 | — | ✓ | ✓ |"]
-    for n, (k, _p, sz, ppl, dl, _r, vis, aud, _t) in BUILDS.items():
-        rows.append(f"| [Inkling-MLX-{n}](https://huggingface.co/{REPO_OWNER}/Inkling-MLX-{n}) | {k} | {sz} | {ppl} | {dl} | {vis} | {aud} |")
+            f"| [{family}-MLX-{uname}](https://huggingface.co/{REPO_OWNER}/{family}-MLX-{uname}) (unpruned) | {ukept} | {usize} | {uppl} | — | ✓ | ✓ |"]
+    for n, (k, _p, sz, ppl, dl, _r, vis, aud, _t) in meta["builds"].items():
+        rows.append(f"| [{family}-MLX-{n}](https://huggingface.co/{REPO_OWNER}/{family}-MLX-{n}) | {k} | {sz} | {ppl} | {dl} | {vis} | {aud} |")
     return "\n".join(rows)
 
 
-def model_card(name: str) -> str:
-    kept, prune, size, ppl, delta, retained, vis, aud, tag = BUILDS[name]
+def model_card(family: str, name: str) -> str:
+    meta = FAMILIES[family]
+    kept, prune, size, ppl, delta, retained, vis, aud, tag = meta["builds"][name]
     warn = ""
     if name == "REAP50-4bit":
         warn = ("\n> **⚠️ Experimental / aggressive build.** At 50% pruning **text** perplexity "
@@ -47,7 +93,7 @@ def model_card(name: str) -> str:
                 "Prefer **REAP12** or **REAP25** unless you specifically need the smallest footprint.\n")
     return f"""---
 license: apache-2.0
-base_model: thinkingmachines/Inkling
+base_model: {meta["base_model"]}
 base_model_relation: quantized
 pipeline_tag: image-text-to-text
 library_name: mlx
@@ -62,12 +108,12 @@ tags:
 - audio-text-to-text
 ---
 
-# Inkling-MLX-{name}
+# {family}-MLX-{name}
 
 **Built with Inkling (Thinking Machines Lab).**
 
 A **REAP-pruned**, 4-bit MLX build of
-[thinkingmachines/Inkling](https://huggingface.co/thinkingmachines/Inkling):
+[{meta["base_model"]}](https://huggingface.co/{meta["base_model"]}):
 each MoE layer keeps its **{kept} highest-saliency routed experts** (of 256), a
 **{prune}% expert prune**. {tag.capitalize()}.
 {warn}
@@ -80,26 +126,16 @@ ranks each routed expert by **saliency** = mean over the tokens that route to it
 `router_gate_weight × ‖expert_output‖₂` — its actual contribution to the residual
 stream. The lowest-saliency experts are dropped; the router simply renormalizes over
 the survivors (no weight surgery). The **2 shared "sink" experts, attention, and
-embeddings are untouched.** Inkling routes **very uniformly** (routing entropy 0.922;
-only ~1 cold expert per layer under multimodal calibration), so it is only *lightly*
-prunable — reflected below.
+embeddings are untouched.** Inkling routes **very uniformly** ({meta["routing"]}), so it
+is only *lightly* prunable — reflected below.
 
 ## Calibrated on text, images **and audio** (this matters)
 
-Inkling is multimodal, and expert saliency was profiled over a mixed corpus of **text
-(code + 15 languages + reasoning), 200 real images, and 180 speech clips** run through
-the full vision and audio paths. This is deliberate: a **text-only** calibration prunes
-experts that ground *visual* features (a Pallas's cat → *"brown bear"*, a golf ball →
-*"butterfly"*); adding only text+image then leaves *audio*-grounding experts unprotected
-(speech transcription word-overlap fell from 0.88 to 0.57 at 25% pruning) — all while
-text perplexity looked fine the whole time. Profiling over all three modalities keeps
-every expert that matters to any of them. On held-out tests this build scores **vision
-{vis}** (vs 2/6 text-only) and **audio {aud}** overlap (vs 0.57 text+image), at no extra
-text cost.
+{meta["calibration_note"].format(vis=vis, aud=aud)}
 
 ## Measured quality (4-bit)
 
-{_table()}
+{_table(family)}
 
 This build: **text perplexity {ppl} ({delta} vs the unpruned 4-bit)**, **vision {vis}**
 (held-out image ID), **audio {aud}** (held-out speech transcription word-overlap),
@@ -149,9 +185,8 @@ ids = tok("The capital of France is")["input_ids"]
 print(tok.decode(greedy_generate(model, config, ids, max_new_tokens=64)))
 ```
 
-Needs an Apple-Silicon Mac with unified memory ≥ the size above. The smaller footprint
-(vs the 496 GB unpruned 4-bit) is the practical point: **{size}** loads eager/wired-resident
-on a 512 GB machine without the memory-ceiling thrash.
+Needs an Apple-Silicon Mac with unified memory ≥ the size above. The smaller footprint is
+the practical point: {meta["footprint_note"].format(size=size)}.
 
 ## Details
 
@@ -168,8 +203,15 @@ License: Apache-2.0 (inherits the base model).
 def main():
     name = sys.argv[1]                       # e.g. "REAP12-4bit"
     src = sys.argv[2]                         # local build dir
-    assert name in BUILDS, f"unknown build {name}"
-    repo = f"{REPO_OWNER}/Inkling-MLX-{name}"
+    family = sys.argv[3] if len(sys.argv) > 3 else detect_family(src)
+    builds = FAMILIES[family]["builds"]
+    if name not in builds:
+        raise SystemExit(
+            f"{family}: no measured results for {name!r}. Populate FAMILIES[{family!r}]"
+            f"['builds'] from scripts/eval_build.py output first — these cards state "
+            f"measured perplexity/vision/audio numbers and must not be published unmeasured."
+        )
+    repo = f"{REPO_OWNER}/{family}-MLX-{name}"
 
     create_repo(repo, repo_type="model", private=False, exist_ok=True)
 
@@ -179,7 +221,7 @@ def main():
         shutil.copy2(f, pkg_dst)
 
     with open(os.path.join(src, "README.md"), "w") as fh:
-        fh.write(model_card(name))
+        fh.write(model_card(family, name))
 
     api = HfApi()
     api.upload_large_folder(repo_id=repo, folder_path=src, repo_type="model")
