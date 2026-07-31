@@ -45,22 +45,6 @@ one of the least explored frontiers on our planet.
 | 🌊 **Streaming convert** | quantizes tensor-by-tensor — never holds the 1.9 TB model in memory |
 | ✅ **Validated** | fp32 parity vs reference + coherent real generation (see [Validation](#-validation)) |
 
-## 📐 Architecture
-
-```
-tokens ─▶ embed ─▶ embed-norm ─┐
-                                ▼
-   66 × ┌───────────────────────────────────────────────┐
-        │ pre-norm ▶ attention(hybrid SWA/global, QK-norm,│
-        │            rel-pos bias, +short-conv) ▶ +resid  │
-        │ pre-norm ▶ MoE(256 experts, top-6 + 2 shared)   │
-        │            or dense SwiGLU (layers 0–1) ▶ +resid │
-        └───────────────────────────────────────────────┘
-                                ▼
-                 final-norm ▶ ÷muP ▶ unembed
-   (image/audio features scatter into the token stream before the stack)
-```
-
 ## 🗂️ Which build do I download?
 
 **Inkling** (975B-A41B):
@@ -123,6 +107,117 @@ Same procedure, its own calibration and its own numbers — prunability does **n
 Worth noting: saliency retention *mispredicted* this. Small retains less saliency than the big model at every ratio (87.5% vs 90.3% at 25%), which suggested it would pay more — it paid less at 25% and far more at 50%. Retention is a routing statistic, not a quality metric; the eval is what decides.
 
 Reproduce with `scripts/fetch_calib_assets.sh` → `scripts/build_calib.py` → `scripts/profile_experts_mm.py` → `scripts/prune_build.py <usage.npz>` → `scripts/eval_build.py`.
+
+## 📐 Architecture
+
+```
+tokens ─▶ embed ─▶ embed-norm ─┐
+                                ▼
+   66 × ┌───────────────────────────────────────────────┐
+        │ pre-norm ▶ attention(hybrid SWA/global, QK-norm,│
+        │            rel-pos bias, +short-conv) ▶ +resid  │
+        │ pre-norm ▶ MoE(256 experts, top-6 + 2 shared)   │
+        │            or dense SwiGLU (layers 0–1) ▶ +resid │
+        └───────────────────────────────────────────────┘
+                                ▼
+                 final-norm ▶ ÷muP ▶ unembed
+   (image/audio features scatter into the token stream before the stack)
+```
+
+## 🧬 What makes Inkling architecturally unusual
+
+`inkling_mm_model` is not a Llama variant with extra towers. Eight mechanisms needed
+implementing from scratch, and several are easy to get subtly wrong.
+
+### Fused gate+up weights are stored ROW-INTERLEAVED
+
+**The single most important detail in this repo.** Every fused gate+up MLP weight —
+`mlp.w13_dn` (dense), `experts.w13_weight`, `shared_experts.shared_w13_weight` — is
+stored **interleaved row-wise**: `[g0, u0, g1, u1, …]`. De-interleave as
+`gate = rows 0::2`, `up = rows 1::2`.
+
+The obvious contiguous split, `[:half]` / `[half:]`, silently scrambles gate↔up in
+**every layer** and produces confident, fluent, *wrong* output — identical in bf16 and
+fp32, so precision experiments don't reveal it. The transformers PR skeleton has the same
+omission, so single-layer parity against *it* passes while both are wrong. The
+authoritative loader is [SGLang's `deinterleave_w13`](https://github.com/sgl-project/sglang/pull/31358).
+
+### Hybrid attention — most layers never see the whole sequence
+
+`sliding_window_size: 512`, `local_layer_ids: [0,1,2,3,4, 6,7,8,9,10, 12, …]`
+
+Layers alternate in blocks of six: five sliding-window layers over 512 tokens, then one
+global. 55 of 66 layers are local in Inkling (35 of 42 in Small). The two paths have
+**independent head counts** — Inkling runs 64 global heads over 8 KV heads but 64 SWA
+heads over 16, so the GQA ratio differs by path.
+
+Global layers additionally apply **log-scaling** for long context: queries and the
+position bias are multiplied by `1 + 0.1·log(max(n/128000, 1))`, a no-op below 128k
+tokens and a gentle temperature correction above it. Sliding-window layers skip it —
+their span is fixed at 512, so there is nothing to correct for.
+
+### Four short convolutions per layer
+
+`sconv_kernel_size: 4`
+
+Depthwise causal convolutions of width 4 sit on **k**, **v**, the attention input, and the
+MLP input — four per layer, 264 in the full model. They give each position a small
+learned mixing window before attention or the MLP sees it. Checkpoint layout is
+`[C, 1, K]`; MLX's `conv1d` wants `[C, K, 1]`.
+
+They are also **stateful during decode**: each needs a rolling 3-token history, so an
+incremental cache has to carry conv state alongside the KV cache.
+
+### Per-head QK normalization changes the attention scale
+
+Queries and keys are RMS-normalized **per head** before the dot product. Because both
+operands then have unit RMS, the usual `1/√d` softmax scale is wrong — Inkling uses
+**`1/d`**. Using `1/√d` gives an over-sharp distribution that still produces plausible
+text, which is why this is worth stating explicitly.
+
+### Relative-position bias conditioned on the hidden state
+
+`d_rel: 16`, `rel_extent: 1024`
+
+Not a fixed ALiBi-style slope. Each layer holds a bank of bias-vs-distance profiles
+`[d_rel, rel_extent]`, and every query projects its own `d_rel`-dim vector that *mixes*
+those profiles into a bias value per backward distance. The bias is zero outside
+`0 ≤ distance < rel_extent`, and sliding-window layers use `rel_extent = 512` to match
+their span.
+
+### Sigmoid router with two shared "sink" experts
+
+`n_routed_experts: 256`, `num_experts_per_tok: 6`, `n_shared_experts: 2`,
+`shared_expert_sink: true`, `route_scale: 8.0`, `norm_after_topk: true`
+
+The router scores with a **sigmoid**, not a softmax, plus a per-expert correction bias
+and a global scale. Top-6 of 256 are selected, weights are renormalized *after* the top-k
+(`norm_after_topk`), then scaled by 8. Two **shared experts** run for every token — and
+because `shared_expert_sink` is set, their gate rows live in the *same* router matrix as
+the routed experts, appended after the 256. Any code that subsets the router (pruning)
+must keep those trailing rows.
+
+Layers 0–1 are dense SwiGLU (`dense_mlp_idx: 2`); everything above is MoE.
+
+### muP logits and a padded vocabulary
+
+The final hidden state is divided by `logits_mup_width_multiplier` (24.0 for Inkling,
+16.0 for Small) before the unembed — a muP-style width correction that keeps logit scale
+stable across model sizes. The embedding matrix is padded to 201,024 rows while only
+**200,058** are real (`unpadded_vocab_size`); logits are truncated to the real vocab, and
+sampling the padding would otherwise be possible.
+
+### Multimodal towers scatter into the token stream
+
+Vision is **HMLP** — no ViT. Images are cut into 40px patches (temporal patch size 2 for
+video), then run through four linear+norm layers straight into the text hidden size.
+Audio is **dMel**: a log-mel spectrogram is discretized into 16 bins per mel channel
+across 80 channels (range −7 to 2), embedded, and normalized.
+
+Both produce soft tokens that are **scattered into the token sequence** at placeholder
+positions before the decoder stack runs — so the decoder sees one flat stream and never
+knows which entries came from pixels or audio. One 40px image patch costs one token, so
+image resolution translates directly into prompt length.
 
 ## 🛠️ Prerequisites
 
@@ -244,11 +339,34 @@ MLX also supports floating-point 4-bit modes (`mx.quantize(mode="mxfp4"|"nvfp4")
 
 ## ✅ Validation
 
-- **fp32 parity** of the decoder layer vs a verbatim reference — max |Δ| ~4e-3 on real weights, both attention types + full MoE.
-- **Real generation** — coherent, correct answers at 4-bit (above).
-- Vision/audio towers match the reference to ~1e-5.
+| Check | Result |
+|---|---|
+| fp32 decoder-layer parity vs reference | max \|Δ\| ~4e-3 on real weights, both attention types + full MoE |
+| fp32 parity at Inkling-Small's config shape | rel max Δ **2.3e-06**, argmax agreement 100% |
+| Vision + audio towers vs reference | ~1e-5 |
+| `InklingProcessor` preprocessing | ~1e-7 (patchify/normalize, log-mel→dMel) |
+| bf16 build vs source checkpoint | **bit-identical**, 87/87 sampled tensors (`verify_bf16_passthrough.py`) |
+| Real generation | coherent and correct at 3/4/6/8-bit (above) |
+| Held-out image ID | 6/6 unpruned and REAP-12/25 (multimodal calibration) |
+| Held-out speech transcription | 0.87–0.90 word overlap |
 
-> **Note on the gate/up layout.** Inkling's checkpoint stores each fused gate+up MLP weight (`w13`) **row-interleaved** — `[g0, u0, g1, u1, …]`, with the gemm reading `0::2`/`1::2`. A contiguous `[:half]/[half:]` split silently scrambles gate↔up in every layer and yields confident-but-wrong output. The transformers PR skeleton has this same omission; the authoritative loader is [SGLang's `deinterleave_w13`](https://github.com/sgl-project/sglang/pull/31358). This port de-interleaves correctly.
+```bash
+python tests/parity.py                # decoder math vs a standalone torch reference
+python scripts/smoke_test.py <build>  # real weights, generation + speed + peak memory
+python scripts/eval_build.py <build>  # audio + image ID + text ppl in one load
+```
+
+### Two bugs worth knowing about
+
+Both were in the *tooling*, both silent, and both would have shipped wrong numbers:
+
+- **`eval_build.py` scored absent image probes as failures.** It skipped probes whose file
+  was missing but still divided by the full probe count — a build scoring 5/5 would be
+  published as "5/6". Now scores against the number actually evaluated and names what it
+  skipped.
+- **`build_calib.py` silently shrank.** It listed specific project paths for its code
+  corpus; when those projects moved, the corpus quietly got smaller rather than erroring,
+  weakening every calibration built from it. Now scans roots via `INKLING_CODE_ROOTS`.
 
 ## 📁 Project structure
 
@@ -271,6 +389,37 @@ inkling-mlx/
 | OOM while loading | raise `iogpu.wired_limit_mb`; use a smaller build; close other apps |
 | `No module named inkling_mlx.models...` | this arch isn't in stock mlx-lm — load via this repo's `load()` |
 | Very slow first token | MLX pages weights from disk on first use; subsequent tokens are faster |
+
+## 📊 What we learned measuring these builds
+
+**Quant tolerance does not transfer between models.** On Inkling-Small, 4-bit shows *no
+measurable loss* against 8-bit. On [DeepSeek-V4](https://github.com/PipeNetwork/deepseek-v4-mlx)
+— same pipeline, same affine int4 — 4-bit costs a significant 4.4%. Measure per model;
+do not carry a bit-width recommendation across architectures.
+
+**Saliency retention is a poor predictor of pruning damage.** It is monotonic with damage
+but wildly non-linear, and it has now mispredicted in both directions:
+
+| Model | Prune | Saliency retained | Actual cost |
+|---|---:|---:|---|
+| Inkling-Small | 25% | 87.5% | none measurable |
+| Inkling-Small | 50% | 71.3% | +88% ppl, audio 0.874 → 0.702 (dropped) |
+| Inkling (975B) | 25% | 90.3% | +3.0% |
+| DeepSeek-V4 | 25% | 96.2% | +4.5% |
+
+Inkling-Small retains *less* saliency than DeepSeek-V4 at every ratio yet tolerates 25%
+pruning for free, while V4 does not. Treat the curve as a screen for whether pruning is
+viable, then measure.
+
+**Text perplexity cannot see multimodal damage.** This is the single most expensive lesson
+here: text-only calibration produced builds whose perplexity looked fine while image ID
+collapsed to 2/6 and speech overlap fell to 0.57. If the model has non-text modalities,
+both the calibration *and* the eval must include them.
+
+**Small evals give wrong answers with confidence.** Related work on DeepSeek-V4 found a
+275-token eval reporting the *opposite* build ranking from a 200k-token one. Use enough
+held-out text, score every build on identical windows, and compare with a paired
+bootstrap rather than overlapping independent intervals.
 
 ## 📚 Resources
 
