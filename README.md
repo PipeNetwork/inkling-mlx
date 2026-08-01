@@ -3,7 +3,8 @@
 Run **Thinking Machines Lab's [Inkling](https://huggingface.co/thinkingmachines/Inkling)** — a **975B-total / 41B-active** sparse-MoE, natively multimodal model — and its smaller sibling **[Inkling-Small](https://huggingface.co/thinkingmachines/Inkling-Small)** (**276B-total / 12B-active**) on Apple Silicon with [MLX](https://github.com/ml-explore/mlx).
 
 <p>
-<a href="https://huggingface.co/pipenetwork"><img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Models-ffcc00"></a>
+<a href="https://huggingface.co/collections/pipenetwork/inkling-mlx-6a6d4114ce22fec3489b1722"><img alt="Inkling collection" src="https://img.shields.io/badge/%F0%9F%A4%97%20Inkling-Collection-ffcc00"></a>
+<a href="https://huggingface.co/collections/pipenetwork/inkling-small-mlx-6a6d41214edc4d6af277e7d2"><img alt="Inkling-Small collection" src="https://img.shields.io/badge/%F0%9F%A4%97%20Inkling--Small-Collection-ffd966"></a>
 <img alt="MLX" src="https://img.shields.io/badge/MLX-Apple%20Silicon-black">
 <img alt="Model" src="https://img.shields.io/badge/model-Inkling%20975B--A41B-7c3aed">
 <img alt="Arch" src="https://img.shields.io/badge/arch-MoE%20%2B%20hybrid--attn%20%2B%20short--conv%20%2B%20MM-blue">
@@ -46,6 +47,9 @@ one of the least explored frontiers on our planet.
 | ✅ **Validated** | fp32 parity vs reference + coherent real generation (see [Validation](#-validation)) |
 
 ## 🗂️ Which build do I download?
+
+Browse either family as a collection — [**Inkling**](https://huggingface.co/collections/pipenetwork/inkling-mlx-6a6d4114ce22fec3489b1722) · [**Inkling-Small**](https://huggingface.co/collections/pipenetwork/inkling-small-mlx-6a6d41214edc4d6af277e7d2) —
+or pick from the tables below.
 
 **Inkling** (975B-A41B):
 
@@ -424,7 +428,7 @@ bootstrap rather than overlapping independent intervals.
 ## 📚 Resources
 
 - Source model: [thinkingmachines/Inkling](https://huggingface.co/thinkingmachines/Inkling)
-- MLX builds: [🤗 pipenetwork](https://huggingface.co/pipenetwork)
+- MLX builds: [🤗 Inkling collection](https://huggingface.co/collections/pipenetwork/inkling-mlx-6a6d4114ce22fec3489b1722) · [🤗 Inkling-Small collection](https://huggingface.co/collections/pipenetwork/inkling-small-mlx-6a6d41214edc4d6af277e7d2) · [all pipenetwork models](https://huggingface.co/pipenetwork)
 - References: [SGLang PR](https://github.com/sgl-project/sglang/pull/31358) · [transformers PR](https://github.com/huggingface/transformers/pull/47347) · [MLX](https://github.com/ml-explore/mlx)
 
 ## 📝 License
